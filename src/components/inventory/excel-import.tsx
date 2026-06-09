@@ -11,11 +11,14 @@ import { toast } from 'sonner';
 interface ImportResult {
   imported: number;
   errors: number;
+  skipped: number;
   total: number;
+  elapsedMs?: number;
   detectedHeaders?: string[];
   columnMapping?: Record<string, string>;
   unmappedColumns?: string[];
-  errorDetails?: { row: number; error: string }[];
+  successDetails?: { row: number; sr: number | null; description: string | null; ndNumber: string | null }[];
+  errorDetails?: { row: number; error: string; data?: string }[];
 }
 
 export function ExcelImport() {
@@ -230,13 +233,19 @@ export function ExcelImport() {
                   <div className="flex-1">
                     <p className="font-medium">Import Complete</p>
                     <div className="text-sm text-muted-foreground mt-1 space-y-0.5">
-                      <p>Total rows: {result.total}</p>
-                      <p className="text-emerald-600">Successfully imported: {result.imported}</p>
+                      <p>Total rows in file: {result.total}</p>
+                      <p className="text-emerald-600">Successfully inserted: {result.imported}</p>
+                      {result.skipped > 0 && (
+                        <p className="text-muted-foreground">Skipped (empty rows): {result.skipped}</p>
+                      )}
                       {result.errors > 0 && (
                         <p className="text-amber-600 flex items-center gap-1">
                           <AlertCircle className="h-3 w-3" />
-                          Errors: {result.errors}
+                          Failed: {result.errors}
                         </p>
+                      )}
+                      {result.elapsedMs != null && (
+                        <p className="text-xs text-muted-foreground">Duration: {result.elapsedMs < 1000 ? `${result.elapsedMs}ms` : `${(result.elapsedMs / 1000).toFixed(1)}s`}</p>
                       )}
                     </div>
                   </div>
@@ -247,9 +256,13 @@ export function ExcelImport() {
                   <div className="flex-1">
                     <p className="font-medium">Import Issues</p>
                     <div className="text-sm text-muted-foreground mt-1 space-y-0.5">
-                      <p>Total rows: {result.total}</p>
-                      <p>Imported: {result.imported}</p>
-                      {result.errors > 0 && <p>Errors: {result.errors}</p>}
+                      <p>Total rows in file: {result.total}</p>
+                      <p>Inserted: {result.imported}</p>
+                      {result.skipped > 0 && <p>Skipped (empty): {result.skipped}</p>}
+                      {result.errors > 0 && <p>Failed: {result.errors}</p>}
+                      {result.elapsedMs != null && (
+                        <p className="text-xs">Duration: {result.elapsedMs < 1000 ? `${result.elapsedMs}ms` : `${(result.elapsedMs / 1000).toFixed(1)}s`}</p>
+                      )}
                     </div>
                   </div>
                 </div>

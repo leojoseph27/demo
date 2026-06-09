@@ -1,9 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
-import { mapProductToDb } from '@/utils/supabase/mappers';
 import * as XLSX from 'xlsx';
 
-// Case-insensitive column mapping: Excel header → database field
+/**
+ * Excel Import Route
+ *
+ * Imports ALL rows from an Excel file into the Supabase products table.
+ * - Every row is inserted, even partially completed ones.
+ * - Empty cells become null in the database.
+ * - Multi-value fields (Colour, Material, Additional Info) are parsed from
+ *   comma/semicolon-separated strings into JSON arrays.
+ * - Detailed logging for every row.
+ *
+ * Column mapping (Excel Header → Supabase column):
+ *   sr               → sr
+ *   English Description → english_description
+ *   Arabic Description  → arabic_description
+ *   ND Number        → nd_number
+ *   barcode          → barcode
+ *   Colour           → colours  (comma-separated → JSON array)
+ *   L                → length
+ *   W                → width
+ *   H                → height
+ *   Made             → made
+ *   Material         → materials (comma-separated → JSON array)
+ *   Additional INFO  → additional_info (comma-separated → JSON array)
+ *   PRICE            → price
+ *   Pcs              → pcs
+ */
+
+// Column mapping config: Excel header patterns → our field name + value type
 const COLUMN_MAPPINGS: { patterns: string[]; field: string; type: 'number' | 'string' | 'array' }[] = [
   { patterns: ['sr', 'Sr', 'SR', 's.r', 'S.R', 'serial', 'Serial', 'no', 'No', '#'], field: 'sr', type: 'number' },
   { patterns: ['english description', 'englishdescription', 'english_description', 'english desc', 'description', 'desc', 'english_desc', 'product description', 'name'], field: 'englishDescription', type: 'string' },
@@ -21,13 +47,36 @@ const COLUMN_MAPPINGS: { patterns: string[]; field: string; type: 'number' | 'st
   { patterns: ['pcs', 'Pcs', 'PCS', 'pieces', 'Pieces', 'PIECES', 'piece', 'qty', 'quantity', 'Quantity', 'QTY', 'units', 'stock'], field: 'pcs', type: 'number' },
 ];
 
+// CamelCase → snake_case mapping for Supabase columns
+const FIELD_TO_DB: Record<string, string> = {
+  sr: 'sr',
+  englishDescription: 'english_description',
+  arabicDescription: 'arabic_description',
+  ndNumber: 'nd_number',
+  barcode: 'barcode',
+  colours: 'colours',
+  length: 'length',
+  width: 'width',
+  height: 'height',
+  made: 'made',
+  materials: 'materials',
+  additionalInfo: 'additional_info',
+  price: 'price',
+  pcs: 'pcs',
+};
+
+/**
+ * Finds the Excel column that matches one of the given patterns.
+ * Tries exact match → case-insensitive → normalised (no spaces/underscores/hyphens).
+ */
 function findFieldValue(row: Record<string, any>, patterns: string[]): { key: string; value: any } | null {
+  const rowKeys = Object.keys(row);
+
   // Exact match
   for (const pattern of patterns) {
     if (row[pattern] !== undefined) return { key: pattern, value: row[pattern] };
   }
-  // Case-insensitive exact match
-  const rowKeys = Object.keys(row);
+  // Case-insensitive match
   for (const pattern of patterns) {
     const patternLower = pattern.toLowerCase();
     for (const key of rowKeys) {
@@ -36,7 +85,7 @@ function findFieldValue(row: Record<string, any>, patterns: string[]): { key: st
       }
     }
   }
-  // Normalized match (remove spaces, underscores, hyphens)
+  // Normalised match (strip spaces, underscores, hyphens)
   const normalizedPatterns = patterns.map(p => p.toLowerCase().replace(/[\s_-]/g, ''));
   for (const key of rowKeys) {
     const normalizedKey = key.toLowerCase().replace(/[\s_-]/g, '');
@@ -48,12 +97,30 @@ function findFieldValue(row: Record<string, any>, patterns: string[]): { key: st
   return null;
 }
 
-function parseArrayField(value: any): string[] | null {
+/**
+ * Parse a multi-value field into a JSON array string.
+ * "Red, Blue, Green" → '["Red","Blue","Green"]'
+ * Returns null for empty/missing values.
+ */
+function parseArrayField(value: any): string | null {
   if (value === null || value === undefined || value === '') return null;
-  if (Array.isArray(value)) return value.filter(v => String(v).trim());
+  if (Array.isArray(value)) {
+    const filtered = value.filter(v => String(v).trim());
+    return filtered.length > 0 ? JSON.stringify(filtered) : null;
+  }
   const str = String(value).trim();
   if (!str) return null;
-  return str.split(/[,;|]/).map(v => v.trim()).filter(Boolean);
+  // Already a JSON array string? Validate and pass through
+  if (str.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(str);
+      if (Array.isArray(parsed) && parsed.length > 0) return JSON.stringify(parsed);
+      if (Array.isArray(parsed) && parsed.length === 0) return null;
+    } catch { /* fall through to comma-split */ }
+  }
+  // Split by comma, semicolon, or pipe
+  const items = str.split(/[,;|]/).map(v => v.trim()).filter(Boolean);
+  return items.length > 0 ? JSON.stringify(items) : null;
 }
 
 function toNumber(value: any): number | null {
@@ -68,6 +135,8 @@ function toString(value: any): string | null {
 }
 
 export async function POST(request: NextRequest) {
+  const importStartTime = Date.now();
+
   try {
     const supabase = createAdminClient();
     const formData = await request.formData();
@@ -86,15 +155,18 @@ export async function POST(request: NextRequest) {
 
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
+    // Use defval: '' so that empty cells become '' rather than being omitted
     const rows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, { defval: '' });
 
     if (rows.length === 0) {
-      return NextResponse.json({ error: 'Excel file has no data rows', imported: 0, errors: 0, total: 0 }, { status: 400 });
+      return NextResponse.json({
+        error: 'Excel file has no data rows',
+        imported: 0, errors: 0, total: 0, skipped: 0,
+      }, { status: 400 });
     }
 
     const detectedHeaders = Object.keys(rows[0]);
-    console.log('📥 Import started - File:', file.name, 'Rows:', rows.length);
-    console.log('📋 Detected Excel headers:', JSON.stringify(detectedHeaders));
+    console.log(`[IMPORT] File: ${file.name}, Rows: ${rows.length}, Headers: ${JSON.stringify(detectedHeaders)}`);
 
     // Build column mapping for this file
     const mappingResult: Record<string, { field: string; type: string; excelKey: string }> = {};
@@ -105,7 +177,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    console.log('🗺️ Column mapping:', JSON.stringify(mappingResult));
+    console.log(`[IMPORT] Column mapping: ${JSON.stringify(Object.fromEntries(
+      Object.entries(mappingResult).map(([f, i]) => [f, i.excelKey])
+    ))}`);
 
     const mappedExcelKeys = new Set(Object.values(mappingResult).map(m => m.excelKey));
     const unmappedColumns = detectedHeaders.filter(h => !mappedExcelKeys.has(h) && h.trim() !== '');
@@ -114,49 +188,58 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         error: 'No recognizable column headers found in Excel file.',
         detectedHeaders,
-        imported: 0, errors: 0, total: rows.length,
+        imported: 0, errors: 0, total: rows.length, skipped: 0,
       }, { status: 400 });
     }
 
     let imported = 0;
     let errors = 0;
-    const errorDetails: { row: number; error: string }[] = [];
+    let skipped = 0;
+    const errorDetails: { row: number; error: string; data?: string }[] = [];
+    const successDetails: { row: number; sr: number | null; description: string | null; ndNumber: string | null }[] = [];
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
+      const rowNum = i + 2; // Excel row number (1-based + header)
+
       try {
+        // Parse all mapped fields from the row
         const record: Record<string, any> = {};
 
         for (const [dbField, mapInfo] of Object.entries(mappingResult)) {
           const rawValue = row[mapInfo.excelKey];
           switch (mapInfo.type) {
-            case 'number': record[dbField] = toNumber(rawValue); break;
-            case 'string': record[dbField] = toString(rawValue); break;
+            case 'number':
+              record[dbField] = toNumber(rawValue);
+              break;
+            case 'string':
+              record[dbField] = toString(rawValue);
+              break;
             case 'array': {
-              const arr = parseArrayField(rawValue);
-              record[dbField] = arr ? JSON.stringify(arr) : null;
+              record[dbField] = parseArrayField(rawValue);
               break;
             }
           }
         }
 
-        // Skip completely empty rows
+        // Skip completely empty rows (ALL fields are null)
         const allFieldsNull = Object.values(record).every(v => v === null || v === undefined);
         if (allFieldsNull) {
-          console.log(`⏭️ Row ${i + 2}: Skipped (all fields empty)`);
+          skipped++;
+          console.log(`[IMPORT] Row ${rowNum}: Skipped (all fields empty)`);
           continue;
         }
 
-        // Validate: at least one identifying field should exist
-        if (!record.englishDescription && !record.ndNumber && !record.sr) {
-          console.log(`⚠️ Row ${i + 2}: No identifying field - skipping`);
-          errors++;
-          errorDetails.push({ row: i + 2, error: 'No identifying field (sr, English Description, or ND Number)' });
-          continue;
-        }
+        // IMPORTANT: Import ALL rows, even partially completed ones.
+        // We only skip if the row is truly empty (all nulls).
+        // Rows with just an sr, or just an ND number, etc. are still inserted.
 
-        // Convert camelCase to snake_case for Supabase
-        const dbData = mapProductToDb(record);
+        // Convert camelCase field names to snake_case for Supabase
+        const dbData: Record<string, any> = {};
+        for (const [field, value] of Object.entries(record)) {
+          const dbKey = FIELD_TO_DB[field] || field;
+          dbData[dbKey] = value;
+        }
 
         const { error: insertError } = await supabase
           .from('products')
@@ -167,33 +250,44 @@ export async function POST(request: NextRequest) {
         }
 
         imported++;
-        console.log(`✅ Row ${i + 2}: Imported successfully`, { sr: record.sr, desc: record.englishDescription });
+        successDetails.push({
+          row: rowNum,
+          sr: record.sr ?? null,
+          description: record.englishDescription ?? null,
+          ndNumber: record.ndNumber ?? null,
+        });
+        console.log(`[IMPORT] Row ${rowNum}: OK - sr=${record.sr ?? '-'}, desc="${record.englishDescription ?? '-'}", nd=${record.ndNumber ?? '-'}`);
       } catch (err: any) {
         errors++;
         const errorMsg = err?.message || String(err);
-        errorDetails.push({ row: i + 2, error: errorMsg });
-        console.error(`❌ Row ${i + 2}: Import failed -`, errorMsg);
+        const dataPreview = JSON.stringify(row).substring(0, 200);
+        errorDetails.push({ row: rowNum, error: errorMsg, data: dataPreview });
+        console.error(`[IMPORT] Row ${rowNum}: FAILED - ${errorMsg}`);
       }
     }
 
-    console.log(`📊 Import complete: ${imported} imported, ${errors} errors, ${rows.length} total`);
+    const elapsedMs = Date.now() - importStartTime;
+    console.log(`[IMPORT] Complete: ${imported} imported, ${errors} errors, ${skipped} skipped, ${rows.length} total rows (${elapsedMs}ms)`);
 
     return NextResponse.json({
       imported,
       errors,
+      skipped,
       total: rows.length,
+      elapsedMs,
       detectedHeaders,
       columnMapping: Object.fromEntries(
         Object.entries(mappingResult).map(([field, info]) => [field, info.excelKey])
       ),
       unmappedColumns,
-      errorDetails: errorDetails.length > 0 ? errorDetails.slice(0, 20) : undefined,
+      successDetails: successDetails.length > 0 ? successDetails : undefined,
+      errorDetails: errorDetails.length > 0 ? errorDetails.slice(0, 50) : undefined,
     });
   } catch (error: any) {
-    console.error('❌ Excel import failed:', error);
+    console.error('[IMPORT] Fatal error:', error);
     return NextResponse.json({
       error: 'Failed to import Excel file: ' + (error?.message || String(error)),
-      imported: 0, errors: 0, total: 0,
+      imported: 0, errors: 0, total: 0, skipped: 0,
     }, { status: 500 });
   }
 }

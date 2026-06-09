@@ -307,9 +307,24 @@ export function ProductTable() {
                             {product.barcode}
                           </Badge>
                         )}
-                        {product.images.length > 0 && (
+                        {product.made && (
+                          <Badge variant="outline" className="text-[10px] h-5 px-1.5">
+                            {product.made}
+                          </Badge>
+                        )}
+                        {(product.length != null || product.width != null || product.height != null) && (
+                          <Badge variant="outline" className="text-[10px] h-5 px-1.5">
+                            {product.length ?? '?'}×{product.width ?? '?'}×{product.height ?? '?'}
+                          </Badge>
+                        )}
+                        {materials.slice(0, 1).map((m, i) => (
+                          <Badge key={i} variant="secondary" className="text-[10px] h-5 px-1.5">
+                            {m}
+                          </Badge>
+                        ))}
+                        {materials.length > 1 && (
                           <Badge variant="secondary" className="text-[10px] h-5 px-1.5">
-                            {product.images.length} img
+                            +{materials.length - 1}
                           </Badge>
                         )}
                         {colours.slice(0, 2).map((c, i) => (
@@ -320,6 +335,16 @@ export function ProductTable() {
                         {colours.length > 2 && (
                           <Badge variant="secondary" className="text-[10px] h-5 px-1.5">
                             +{colours.length - 2}
+                          </Badge>
+                        )}
+                        {product.pcs != null && (
+                          <Badge variant="outline" className="text-[10px] h-5 px-1.5">
+                            {product.pcs} pcs
+                          </Badge>
+                        )}
+                        {product.images.length > 0 && (
+                          <Badge variant="secondary" className="text-[10px] h-5 px-1.5">
+                            {product.images.length} img
                           </Badge>
                         )}
                       </div>

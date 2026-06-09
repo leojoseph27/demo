@@ -120,16 +120,12 @@ echo "[BUN] Setting up database (no-op for Supabase)..."
 bun run db:push
 log_step_end "bun run db:push"
 
-# Build the production bundle for better stability
-log_step_start "bun run build"
-echo "[BUN] Building production bundle..."
-bun run build
-log_step_end "bun run build"
-
-# Start the Next.js production server.
+# Start the Next.js dev server using exec.
 # Using exec ensures the server replaces this process, making it a direct
-# child of the container's init system (tini), which prevents it from
-# being killed when the parent shell exits.
-log_step_start "Starting Next.js production server"
-echo "[BUN] Starting production server on port 3000..."
-exec node node_modules/.bin/next start -p 3000
+# child of the container's init system (tini). This prevents the server
+# from being killed when the parent shell exits.
+# Dev mode is used because the production server (next start) is unstable
+# in this container environment.
+log_step_start "Starting Next.js dev server"
+echo "[BUN] Starting dev server on port 3000..."
+exec node node_modules/.bin/next dev -p 3000
