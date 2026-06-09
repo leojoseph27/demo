@@ -49,7 +49,6 @@ interface InventoryState {
   // Auth
   isAuthenticated: boolean;
   user: { id: string; email: string; name: string | null } | null;
-  adminExists: boolean;
 
   // Navigation
   currentView: ViewMode;
@@ -82,7 +81,6 @@ interface InventoryState {
 
   // Actions
   setAuthenticated: (auth: boolean, user?: any) => void;
-  setAdminExists: (exists: boolean) => void;
   setView: (view: ViewMode) => void;
   goBack: () => void;
   setProducts: (products: Product[], total: number) => void;
@@ -102,7 +100,6 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
   // Auth
   isAuthenticated: false,
   user: null,
-  adminExists: false,
 
   // Navigation
   currentView: 'dashboard',
@@ -135,7 +132,6 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
 
   // Actions
   setAuthenticated: (auth, user) => set({ isAuthenticated: auth, user: user || null }),
-  setAdminExists: (exists) => set({ adminExists: exists }),
   setView: (view) => set((state) => ({ previousView: state.currentView, currentView: view })),
   goBack: () => set((state) => ({ currentView: state.previousView || 'dashboard', previousView: null })),
   setProducts: (products, total) => set({ products, totalProducts: total }),

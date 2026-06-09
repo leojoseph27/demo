@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAdminClient } from '@/utils/supabase/server';
-import { createHash } from 'crypto';
 
+/**
+ * POST /api/auth/login
+ * Simple hardcoded authentication using environment variables.
+ * No database lookup, no user registration, no Supabase Auth.
+ * Single administrator only — credentials defined in ADMIN_EMAIL / ADMIN_PASSWORD env vars.
+ */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createAdminClient();
     const body = await request.json();
     const { email, password } = body;
 
@@ -12,26 +15,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Email and password are required' }, { status: 400 });
     }
 
-    const { data: user, error } = await supabase
-      .from('admin_users')
-      .select('*')
-      .eq('email', email)
-      .single();
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
 
-    if (error || !user) {
-      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    if (!adminEmail || !adminPassword) {
+      console.error('ADMIN_EMAIL or ADMIN_PASSWORD environment variables are not set');
+      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
     }
 
-    const hashedPassword = createHash('sha256').update(password).digest('hex');
-    if ((user as any).password !== hashedPassword) {
-      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    if (email === adminEmail && password === adminPassword) {
+      return NextResponse.json({
+        id: 'admin',
+        email: adminEmail,
+        name: 'Admin',
+      });
     }
 
-    return NextResponse.json({
-      id: (user as any).id,
-      email: (user as any).email,
-      name: (user as any).name,
-    });
+    return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
   } catch (error) {
     console.error('Error logging in:', error);
     return NextResponse.json({ error: 'Failed to login' }, { status: 500 });
