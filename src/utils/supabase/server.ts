@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
-import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import { createClient as createSupabaseClient, SupabaseClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -30,17 +30,32 @@ export const createClient = async () => {
   });
 };
 
+// Singleton admin client — reused across all API route invocations.
+// Avoids creating a new SupabaseClient instance per request, which can
+// leak HTTP agents and eventually exhaust file descriptors / memory.
+let _adminClient: SupabaseClient | null = null;
+
 /**
- * Create a Supabase admin client that bypasses RLS.
+ * Create (or return the cached) Supabase admin client that bypasses RLS.
  * Uses the service role key if available, otherwise falls back to anon key.
  * Only use this in API routes where elevated access is needed.
  */
-export const createAdminClient = () => {
+export const createAdminClient = (): SupabaseClient => {
+  if (_adminClient) return _adminClient;
+
   const key = supabaseServiceKey || supabaseAnonKey;
-  return createSupabaseClient(supabaseUrl!, key!, {
+  if (!supabaseUrl || !key) {
+    throw new Error(
+      "Supabase URL or key is not configured. Check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY env vars."
+    );
+  }
+
+  _adminClient = createSupabaseClient(supabaseUrl, key, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
     },
   });
+
+  return _adminClient;
 };
