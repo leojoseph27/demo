@@ -2,6 +2,36 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { mapProductFromDb, mapProductToDb } from '@/utils/supabase/mappers';
 
+/**
+ * Ensures array-like fields are stored as JSON strings in Supabase.
+ * Handles both arrays (from frontend form) and strings (from API/Excel).
+ * - Array → JSON.stringify
+ * - String that looks like JSON → pass through
+ * - String with comma-separated values → parse and stringify
+ * - null/undefined/empty → null
+ */
+function normalizeJsonField(value: any): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (Array.isArray(value)) {
+    return value.length > 0 ? JSON.stringify(value) : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    // Already a JSON array string? Pass through
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return trimmed;
+      } catch {}
+    }
+    // Comma/semicolon separated values
+    const items = trimmed.split(/[,;|]/).map(v => v.trim()).filter(Boolean);
+    return items.length > 0 ? JSON.stringify(items) : null;
+  }
+  return null;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = createAdminClient();
@@ -76,13 +106,13 @@ export async function POST(request: NextRequest) {
       arabicDescription: body.arabicDescription || null,
       ndNumber: body.ndNumber || null,
       barcode: body.barcode || null,
-      colours: body.colours ? JSON.stringify(body.colours) : null,
+      colours: normalizeJsonField(body.colours),
       length: body.length ?? null,
       width: body.width ?? null,
       height: body.height ?? null,
       made: body.made || null,
-      materials: body.materials ? JSON.stringify(body.materials) : null,
-      additionalInfo: body.additionalInfo ? JSON.stringify(body.additionalInfo) : null,
+      materials: normalizeJsonField(body.materials),
+      additionalInfo: normalizeJsonField(body.additionalInfo),
       price: body.price ?? null,
       pcs: body.pcs ?? null,
     });
