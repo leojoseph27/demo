@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { useInventoryStore, DashboardStats } from '@/store/inventory-store';
 import {
   Package,
@@ -16,6 +17,7 @@ import {
   Search,
   Trash2,
   Loader2,
+  FileDown,
 } from 'lucide-react';
 import {
   AlertDialog,
@@ -33,6 +35,11 @@ import { toast } from 'sonner';
 export function Dashboard() {
   const { setView, stats, setStats, setLoading } = useInventoryStore();
   const [isClearing, setIsClearing] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [srRange, setSrRange] = useState('');
+  const [srRangeError, setSrRangeError] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadStats();
@@ -155,25 +162,116 @@ export function Dashboard() {
               <Upload className="h-6 w-6 text-amber-600" />
               <span className="text-xs">Import Excel</span>
             </Button>
-            <Button
-              variant="outline"
-              className="h-auto py-4 flex-col gap-2"
-              onClick={async () => {
-                const res = await fetch('/api/products/export');
-                if (res.ok) {
-                  const blob = await res.blob();
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'products_export.xlsx';
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }
-              }}
-            >
-              <Download className="h-6 w-6 text-purple-600" />
-              <span className="text-xs">Export Excel</span>
-            </Button>
+            <div className="relative" ref={exportMenuRef}>
+              <Button
+                variant="outline"
+                className="h-auto py-4 flex-col gap-2 w-full"
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                disabled={isExporting}
+              >
+                {isExporting ? (
+                  <span className="h-6 w-6 border-2 border-purple-600 border-t-transparent animate-spin rounded-full" />
+                ) : (
+                  <Download className="h-6 w-6 text-purple-600" />
+                )}
+                <span className="text-xs">Export Excel</span>
+              </Button>
+
+              {showExportMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => { setShowExportMenu(false); setSrRangeError(''); }} />
+                  <div className="absolute left-0 top-full mt-1 z-50 w-72 bg-popover border rounded-lg shadow-lg p-3 space-y-3">
+                    <p className="text-sm font-medium">Export Excel</p>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start h-9"
+                      onClick={async () => {
+                        setIsExporting(true);
+                        setShowExportMenu(false);
+                        try {
+                          const res = await fetch('/api/products/export');
+                          if (!res.ok) throw new Error('Export failed');
+                          const blob = await res.blob();
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = 'products_export.xlsx';
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        } catch { toast.error('Export failed'); }
+                        finally { setIsExporting(false); }
+                      }}
+                      disabled={isExporting}
+                    >
+                      <FileDown className="h-4 w-4 mr-2" />
+                      Export All Products
+                    </Button>
+
+                    <div className="border-t" />
+
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground">Export by Serial Number Range</p>
+                      <Input
+                        placeholder="e.g. 1-7, 25-40, 100-150"
+                        value={srRange}
+                        onChange={(e) => { setSrRange(e.target.value); setSrRangeError(''); }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            setSrRangeError('');
+                            const trimmed = srRange.trim();
+                            const m = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+                            if (!m) { setSrRangeError('Invalid format. Use: 1-7, 25-40, 100-150'); return; }
+                            const from = parseInt(m[1], 10), to = parseInt(m[2], 10);
+                            if (from > to) { setSrRangeError('Start number cannot be greater than end number.'); return; }
+                            setIsExporting(true);
+                            fetch(`/api/products/export?srFrom=${from}&srTo=${to}`)
+                              .then(res => { if (!res.ok) return res.json().then(b => { throw new Error(b.error || 'Export failed'); }); return res.blob(); })
+                              .then(blob => {
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a'); a.href = url; a.download = `products_sr_${from}_${to}.xlsx`; a.click(); URL.revokeObjectURL(url);
+                                setShowExportMenu(false); setSrRange('');
+                              })
+                              .catch(err => toast.error(err.message || 'Export failed'))
+                              .finally(() => setIsExporting(false));
+                          }
+                        }}
+                        className="h-9 text-sm"
+                        disabled={isExporting}
+                      />
+                      {srRangeError && <p className="text-xs text-destructive">{srRangeError}</p>}
+                      <Button
+                        size="sm"
+                        className="w-full h-9"
+                        disabled={isExporting || !srRange.trim()}
+                        onClick={() => {
+                          setSrRangeError('');
+                          const trimmed = srRange.trim();
+                          const m = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+                          if (!m) { setSrRangeError('Invalid format. Use: 1-7, 25-40, 100-150'); return; }
+                          const from = parseInt(m[1], 10), to = parseInt(m[2], 10);
+                          if (from > to) { setSrRangeError('Start number cannot be greater than end number.'); return; }
+                          setIsExporting(true);
+                          fetch(`/api/products/export?srFrom=${from}&srTo=${to}`)
+                            .then(res => { if (!res.ok) return res.json().then(b => { throw new Error(b.error || 'Export failed'); }); return res.blob(); })
+                            .then(blob => {
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement('a'); a.href = url; a.download = `products_sr_${from}_${to}.xlsx`; a.click(); URL.revokeObjectURL(url);
+                              setShowExportMenu(false); setSrRange('');
+                            })
+                            .catch(err => toast.error(err.message || 'Export failed'))
+                            .finally(() => setIsExporting(false));
+                        }}
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Export Range
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
