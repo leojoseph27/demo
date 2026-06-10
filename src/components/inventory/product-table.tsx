@@ -317,16 +317,26 @@ export function ProductTable() {
 
       {/* Search result info */}
       {searchQuery && !groupByNd && totalProducts > 0 && (
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-2 text-sm flex-wrap">
           <Badge variant="secondary" className="font-normal">
             <Search className="h-3 w-3 mr-1" />
             {totalProducts} matching product{totalProducts !== 1 ? 's' : ''}
           </Badge>
-          {products.length > 0 && products[0].ndNumber && products.filter(p => p.ndNumber === products[0].ndNumber).length > 1 && (
-            <Badge variant="outline" className="font-normal">
-              ND {products[0].ndNumber}: {products.filter(p => p.ndNumber === products[0].ndNumber).length} products
-            </Badge>
-          )}
+          {(() => {
+            const ndMatches = products.filter(p =>
+              p.ndNumber?.toLowerCase().includes(searchQuery.toLowerCase())
+            );
+            if (ndMatches.length > 0) {
+              const uniqueNdNumbers = [...new Set(ndMatches.map(p => p.ndNumber))];
+              return (
+                <Badge variant="outline" className="font-normal bg-amber-50 border-amber-300 text-amber-800">
+                  <Layers className="h-3 w-3 mr-1" />
+                  {ndMatches.length} product{ndMatches.length !== 1 ? 's' : ''} in {uniqueNdNumbers.length} ND group{uniqueNdNumbers.length !== 1 ? 's' : ''} (shown first)
+                </Badge>
+              );
+            }
+            return null;
+          })()}
         </div>
       )}
 

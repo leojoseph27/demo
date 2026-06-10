@@ -118,17 +118,132 @@ export async function GET(request: NextRequest) {
     const sortColumn = SORT_COLUMNS[sortBy] || 'sr';
     const sortAscending = sortOrder === 'asc';
 
-    // Build the query
+    /**
+     * Helper: apply common filters (material, colour, made, price) to a query.
+     * Note: materials and colours are JSONB columns — ilike doesn't work on them.
+     * We use textSearch with 'plain' config or filter by casting to text.
+     * For simplicity, we use .contains() which does exact JSONB containment.
+     */
+    const applyCommonFilters = (q: any) => {
+      if (material) {
+        // JSONB containment: searches for the material string within the JSON array
+        // e.g., materials @> '"Plastic"' matches ["Plastic", "Glass"]
+        q = q.filter('materials', 'cs', `"${material}"`);
+      }
+      if (colour) {
+        q = q.filter('colours', 'cs', `"${colour}"`);
+      }
+      if (made) q = q.ilike('made', `%${made}%`);
+      if (priceMin) q = q.gte('price', parseFloat(priceMin));
+      if (priceMax) q = q.lte('price', parseFloat(priceMax));
+      return q;
+    };
+
+    // ── When searching: use two-query approach to guarantee ND number matches appear first ──
+    // This handles the cross-page issue where ND-matching products might be on page 2+.
+    if (search && !ndNumber) {
+      // Query A: Fetch ALL products where nd_number matches the search (no pagination)
+      // These will always be shown first regardless of which page they'd normally be on.
+      let ndQuery = supabase
+        .from('products')
+        .select('*, product_images(*)')
+        .ilike('nd_number', `%${search}%`)
+        .order(sortColumn, { ascending: sortAscending, nullsFirst: true })
+        .limit(500);
+      ndQuery = applyCommonFilters(ndQuery);
+
+      // Query B: Count total matching products (both ND and non-ND)
+      // Note: materials and colours are JSONB, so we can't use ilike on them.
+      // Search only covers text columns: nd_number, barcode, english_description, arabic_description.
+      let countQuery = supabase
+        .from('products')
+        .select('*', { count: 'exact', head: true })
+        .or(
+          `nd_number.ilike.%${search}%,barcode.ilike.%${search}%,english_description.ilike.%${search}%,arabic_description.ilike.%${search}%`
+        );
+      countQuery = applyCommonFilters(countQuery);
+
+      const [ndResult, countResult] = await Promise.all([ndQuery, countQuery]);
+
+      if (ndResult.error) {
+        console.error('Supabase error fetching ND products:', ndResult.error);
+        return NextResponse.json({ error: ndResult.error.message }, { status: 500 });
+      }
+      if (countResult.error) {
+        console.error('Supabase error counting products:', countResult.error);
+        return NextResponse.json({ error: countResult.error.message }, { status: 500 });
+      }
+
+      const ndProducts = (ndResult.data || []).map(mapProductFromDb);
+      const ndCount = ndProducts.length;
+      const totalCount = countResult.count || 0;
+
+      // Sort ND matches by priority: exact → starts-with → contains
+      const searchLower = search.toLowerCase();
+      ndProducts.sort((a, b) => {
+        const aNd = (a.ndNumber || '').toLowerCase();
+        const bNd = (b.ndNumber || '').toLowerCase();
+        const aPriority = aNd === searchLower ? 0 : aNd.startsWith(searchLower) ? 1 : 2;
+        const bPriority = bNd === searchLower ? 0 : bNd.startsWith(searchLower) ? 1 : 2;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+        // Within same priority, preserve sort column order
+        return 0;
+      });
+
+      const ndProductIds = new Set(ndProducts.map(p => p.id));
+
+      // Calculate how many ND products appear on this page
+      const pageStart = (page - 1) * limit;
+      const pageEnd = page * limit;
+      const ndOnThisPage = ndProducts.slice(pageStart, pageEnd);
+      const remainingSlots = limit - ndOnThisPage.length;
+
+      // Query C: Fetch non-ND matching products to fill remaining slots on this page
+      let otherProducts: any[] = [];
+      if (remainingSlots > 0) {
+        // Calculate offset into the non-ND results
+        // If ndCount > pageStart, some ND products took slots on this page
+        // The non-ND offset is: pageStart minus however many ND products preceded this page
+        const ndBeforeThisPage = Math.min(ndCount, pageStart);
+        const nonNdOffset = pageStart - ndBeforeThisPage;
+
+        let nonNdQuery = supabase
+          .from('products')
+          .select('*, product_images(*)')
+          .or(
+            `barcode.ilike.%${search}%,english_description.ilike.%${search}%,arabic_description.ilike.%${search}%`
+          )
+          .not('nd_number', 'ilike', `%${search}%`)
+          .order(sortColumn, { ascending: sortAscending, nullsFirst: true })
+          .range(nonNdOffset, nonNdOffset + remainingSlots - 1);
+        nonNdQuery = applyCommonFilters(nonNdQuery);
+
+        const { data: nonNdData, error: nonNdError } = await nonNdQuery;
+        if (nonNdError) {
+          console.error('Supabase error fetching non-ND products:', nonNdError);
+          return NextResponse.json({ error: nonNdError.message }, { status: 500 });
+        }
+        otherProducts = (nonNdData || []).map(mapProductFromDb);
+      }
+
+      // Combine: ND matches for this page first, then non-ND matches
+      const products = [...ndOnThisPage, ...otherProducts];
+
+      return NextResponse.json({ products, total: totalCount, page, limit });
+    }
+
+    // ── No search (or ndNumber filter): standard paginated query ──
     let query = supabase
       .from('products')
       .select('*, product_images(*)', { count: 'exact' })
       .order(sortColumn, { ascending: sortAscending, nullsFirst: true })
       .range((page - 1) * limit, page * limit - 1);
 
-    // Search filter (OR across multiple fields)
+    // Search filter (OR across text fields) — only when ndNumber filter is used with search
+    // Note: materials/colours are JSONB columns, ilike doesn't work on them
     if (search) {
       query = query.or(
-        `nd_number.ilike.%${search}%,barcode.ilike.%${search}%,english_description.ilike.%${search}%,arabic_description.ilike.%${search}%,materials.ilike.%${search}%,colours.ilike.%${search}%`
+        `nd_number.ilike.%${search}%,barcode.ilike.%${search}%,english_description.ilike.%${search}%,arabic_description.ilike.%${search}%`
       );
     }
 
@@ -137,25 +252,7 @@ export async function GET(request: NextRequest) {
       query = query.eq('nd_number', ndNumber);
     }
 
-    if (material) {
-      query = query.ilike('materials', `%${material}%`);
-    }
-
-    if (colour) {
-      query = query.ilike('colours', `%${colour}%`);
-    }
-
-    if (made) {
-      query = query.ilike('made', `%${made}%`);
-    }
-
-    if (priceMin) {
-      query = query.gte('price', parseFloat(priceMin));
-    }
-
-    if (priceMax) {
-      query = query.lte('price', parseFloat(priceMax));
-    }
+    query = applyCommonFilters(query);
 
     const { data, count, error } = await query;
 
