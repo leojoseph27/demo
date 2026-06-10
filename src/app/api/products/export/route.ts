@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import * as XLSX from 'xlsx';
 
@@ -119,12 +119,81 @@ async function fetchAllProducts(supabase: ReturnType<typeof createAdminClient>) 
   return allRows;
 }
 
-export async function GET() {
+/**
+ * Fetch products within a serial number range.
+ * Uses Supabase .gte() / .lte() filters on the `sr` column.
+ */
+async function fetchProductsBySrRange(
+  supabase: ReturnType<typeof createAdminClient>,
+  srFrom: number,
+  srTo: number,
+) {
+  const allRows: any[] = [];
+  let offset = 0;
+  const batchSize = 1000;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data, error } = await supabase
+      .from('products')
+      .select('*, product_images(*)')
+      .gte('sr', srFrom)
+      .lte('sr', srTo)
+      .order('sr', { ascending: true, nullsFirst: true })
+      .range(offset, offset + batchSize - 1);
+
+    if (error) {
+      throw error;
+    }
+
+    if (!data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allRows.push(...data);
+      hasMore = data.length === batchSize;
+      offset += batchSize;
+    }
+  }
+
+  return allRows;
+}
+
+export async function GET(request: NextRequest) {
   try {
     const supabase = createAdminClient();
+    const { searchParams } = new URL(request.url);
 
-    // Fetch ALL products using paginated batch fetching (handles >1000 rows)
-    const data = await fetchAllProducts(supabase);
+    // Check for serial number range parameters
+    const srFromParam = searchParams.get('srFrom');
+    const srToParam = searchParams.get('srTo');
+
+    let data: any[];
+
+    if (srFromParam !== null && srToParam !== null) {
+      // Validate range format
+      const srFrom = Number(srFromParam);
+      const srTo = Number(srToParam);
+
+      if (isNaN(srFrom) || isNaN(srTo)) {
+        return NextResponse.json(
+          { error: 'Invalid range format. Sr numbers must be valid integers.' },
+          { status: 400 },
+        );
+      }
+
+      if (srFrom > srTo) {
+        return NextResponse.json(
+          { error: 'Invalid range: start number cannot be greater than end number.' },
+          { status: 400 },
+        );
+      }
+
+      // Fetch products within the serial number range
+      data = await fetchProductsBySrRange(supabase, srFrom, srTo);
+    } else {
+      // Fetch ALL products using paginated batch fetching (handles >1000 rows)
+      data = await fetchAllProducts(supabase);
+    }
 
     // ── Create workbook and worksheet ──
     const workbook = XLSX.utils.book_new();

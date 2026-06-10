@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useInventoryStore, Product, SortBy, SortOrder } from '@/store/inventory-store';
+import { toast } from 'sonner';
 import {
   Search,
   Plus,
@@ -30,6 +31,7 @@ import {
   ChevronRight,
   Layers,
   Coins,
+  FileDown,
 } from 'lucide-react';
 
 /** Format price as KD */
@@ -93,6 +95,10 @@ export function ProductTable() {
   } = useInventoryStore();
 
   const [showFilters, setShowFilters] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [srRange, setSrRange] = useState('');
+  const [srRangeError, setSrRangeError] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
   const [localSearch, setLocalSearch] = useState(searchQuery);
   const totalPages = Math.ceil(totalProducts / 50);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
@@ -270,6 +276,68 @@ export function ProductTable() {
     { value: 'recently_added', label: 'Recently Added' },
   ];
 
+  // ── Export handlers ──
+  const downloadBlob = async (url: string, filename: string) => {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Export failed');
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(blobUrl);
+  };
+
+  const handleExportAll = async () => {
+    setIsExporting(true);
+    setShowExportMenu(false);
+    try {
+      await downloadBlob('/api/products/export', 'products_export.xlsx');
+    } catch (err: any) {
+      toast.error(err.message || 'Export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportByRange = async () => {
+    setSrRangeError('');
+
+    const trimmed = srRange.trim();
+    // Validate format: must be "number-number"
+    const match = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (!match) {
+      setSrRangeError('Invalid format. Use: 1-7, 25-40, 100-150');
+      return;
+    }
+
+    const from = parseInt(match[1], 10);
+    const to = parseInt(match[2], 10);
+
+    if (from > to) {
+      setSrRangeError('Start number cannot be greater than end number.');
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      await downloadBlob(
+        `/api/products/export?srFrom=${from}&srTo=${to}`,
+        `products_sr_${from}_${to}.xlsx`,
+      );
+      setShowExportMenu(false);
+      setSrRange('');
+    } catch (err: any) {
+      toast.error(err.message || 'Export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -287,25 +355,71 @@ export function ProductTable() {
                 : `${totalProducts} total`}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-9"
-          onClick={async () => {
-            const res = await fetch('/api/products/export');
-            if (res.ok) {
-              const blob = await res.blob();
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = 'products_export.xlsx';
-              a.click();
-              URL.revokeObjectURL(url);
-            }
-          }}
-        >
-          <Download className="h-4 w-4" />
-        </Button>
+        <div className="relative">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9"
+            onClick={() => setShowExportMenu(!showExportMenu)}
+            disabled={isExporting}
+          >
+            {isExporting ? (
+              <span className="h-4 w-4 border-2 border-current border-t-transparent animate-spin rounded-full" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+          </Button>
+
+          {showExportMenu && (
+            <>
+              {/* Backdrop to close menu on outside click */}
+              <div className="fixed inset-0 z-40" onClick={() => { setShowExportMenu(false); setSrRangeError(''); }} />
+              <div className="absolute right-0 top-full mt-1 z-50 w-72 bg-popover border rounded-lg shadow-lg p-3 space-y-3">
+                <p className="text-sm font-medium">Export Excel</p>
+
+                {/* Export All */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start h-9"
+                  onClick={handleExportAll}
+                  disabled={isExporting}
+                >
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Export All Products
+                </Button>
+
+                {/* Divider */}
+                <div className="border-t" />
+
+                {/* Export by Range */}
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">Export by Serial Number Range</p>
+                  <Input
+                    placeholder="e.g. 1-7, 25-40, 100-150"
+                    value={srRange}
+                    onChange={(e) => { setSrRange(e.target.value); setSrRangeError(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleExportByRange(); }}
+                    className="h-9 text-sm"
+                    disabled={isExporting}
+                  />
+                  {srRangeError && (
+                    <p className="text-xs text-destructive">{srRangeError}</p>
+                  )}
+                  <Button
+                    size="sm"
+                    className="w-full h-9"
+                    onClick={handleExportByRange}
+                    disabled={isExporting || !srRange.trim()}
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Export Range
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
         <Button size="sm" onClick={() => setView('add-product')} className="h-9">
           <Plus className="h-4 w-4" />
         </Button>
