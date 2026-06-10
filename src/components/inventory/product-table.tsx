@@ -220,14 +220,17 @@ export function ProductTable() {
   };
 
   // ── Restore scroll position when returning from edit/save ──
+  // Must wait until products are loaded and rendered, otherwise there's
+  // nothing to scroll to.  Clear the saved position after restoring so
+  // subsequent re-renders don't re-scroll.
   useEffect(() => {
-    if (scrollPosition > 0) {
-      // Use requestAnimationFrame to ensure the DOM has rendered
+    if (scrollPosition > 0 && products.length > 0 && !isLoading) {
       requestAnimationFrame(() => {
         window.scrollTo(0, scrollPosition);
+        setScrollPosition(0); // clear so it only restores once
       });
     }
-  }, []); // Only on mount
+  }, [products, isLoading, scrollPosition]);
 
   const toggleSortOrder = () => {
     setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
