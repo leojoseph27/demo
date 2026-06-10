@@ -163,15 +163,35 @@ export function Dashboard() {
         </CardContent>
       </Card>
 
-      {/* Browse Products Button */}
-      <Button
-        variant="outline"
-        className="w-full h-14 text-base"
-        onClick={() => setView('products')}
-      >
-        <Package className="h-5 w-5 mr-2" />
-        Browse All Products ({stats?.totalProducts ?? 0})
-      </Button>
+      {/* Empty State or Browse Products */}
+      {(stats?.totalProducts ?? 0) === 0 ? (
+        <Card className="border-dashed">
+          <CardContent className="py-12 text-center">
+            <Package className="h-16 w-16 mx-auto text-muted-foreground/30 mb-4" />
+            <p className="text-lg font-medium text-muted-foreground">No products found</p>
+            <p className="text-sm text-muted-foreground mt-1">Import an Excel file to begin.</p>
+            <div className="flex gap-3 justify-center mt-6">
+              <Button onClick={() => setView('import')}>
+                <Upload className="h-4 w-4 mr-2" />
+                Import Excel
+              </Button>
+              <Button variant="outline" onClick={() => setView('add-product')}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Product
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <Button
+          variant="outline"
+          className="w-full h-14 text-base"
+          onClick={() => setView('products')}
+        >
+          <Package className="h-5 w-5 mr-2" />
+          Browse All Products ({stats?.totalProducts ?? 0})
+        </Button>
+      )}
     </div>
   );
 }

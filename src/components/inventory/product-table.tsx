@@ -234,13 +234,28 @@ export function ProductTable() {
             <Skeleton key={i} className="h-24 w-full rounded-lg" />
           ))}
         </div>
+      ) : products.length === 0 && totalProducts === 0 ? (
+        <div className="text-center py-16">
+          <ImageIcon className="h-16 w-16 mx-auto text-muted-foreground/30 mb-4" />
+          <p className="text-lg font-medium text-muted-foreground">No products found</p>
+          <p className="text-sm text-muted-foreground mt-1">Import an Excel file to begin.</p>
+          <div className="flex gap-3 justify-center mt-6">
+            <Button onClick={() => setView('import')}>
+              <Upload className="h-4 w-4 mr-2" />
+              Import Excel
+            </Button>
+            <Button variant="outline" onClick={() => setView('add-product')}>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Product
+            </Button>
+          </div>
+        </div>
       ) : products.length === 0 ? (
         <div className="text-center py-12">
           <ImageIcon className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" />
-          <p className="text-muted-foreground">No products found</p>
-          <Button variant="outline" className="mt-4" onClick={() => setView('add-product')}>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Product
+          <p className="text-muted-foreground">No products match your search</p>
+          <Button variant="outline" className="mt-4" onClick={() => { setLocalSearch(''); setSearchQuery(''); setCurrentPage(1); }}>
+            Clear Search
           </Button>
         </div>
       ) : (
