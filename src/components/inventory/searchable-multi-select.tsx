@@ -2,7 +2,14 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '@/components/ui/command';
+import {
+  Command,
+  CommandInput,
+  CommandList,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+} from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { Check, X, ChevronsUpDown } from 'lucide-react';
@@ -18,15 +25,17 @@ interface SearchableMultiSelectProps {
 }
 
 /**
- * Searchable autocomplete multi-select component.
+ * Autocomplete combobox multi-select.
  *
- * Features:
- * - Type to filter from existing suggestions
- * - Select multiple values shown as removable chips/badges
- * - "Add 'X'" option when typed value doesn't match any suggestion
- * - Newly added values automatically become available for future selection
- * - Mobile-friendly with full-width popover
- * - Fast client-side filtering
+ * Behaviour:
+ * - Click the trigger → popover opens showing ALL available options immediately
+ * - Type to filter the list (narrows as you type)
+ * - Click an option to select it (shown as a removable chip)
+ * - Selected items show a checkmark but remain in the list (dimmed) for reference
+ * - If the typed value doesn't match anything → show "Add 'X'" option
+ * - After adding, the new value persists in the suggestions for future use
+ * - Backspace with empty input removes last selected value
+ * - Mobile-friendly, full-width dropdown
  */
 export function SearchableMultiSelect({
   label,
@@ -41,14 +50,15 @@ export function SearchableMultiSelect({
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Filtered suggestions based on input, excluding already-selected values
-  const filteredSuggestions = suggestions.filter(
-    (s) =>
-      !values.includes(s) &&
-      s.toLowerCase().includes(inputValue.toLowerCase())
-  );
+  // ── Filtering ────────────────────────────────────────────────────────
+  // When the popover opens (empty input), ALL suggestions are visible.
+  // As the user types, the list narrows to matching items.
+  const searchLower = inputValue.toLowerCase();
+  const filteredSuggestions = searchLower
+    ? suggestions.filter((s) => s.toLowerCase().includes(searchLower))
+    : suggestions; // empty search → show everything
 
-  // Determine if the current input is a new value that can be added
+  // Can the user add a brand-new value?
   const trimmedInput = inputValue.trim();
   const isExactMatch = suggestions.some(
     (s) => s.toLowerCase() === trimmedInput.toLowerCase()
@@ -56,37 +66,36 @@ export function SearchableMultiSelect({
   const isAlreadySelected = values.some(
     (v) => v.toLowerCase() === trimmedInput.toLowerCase()
   );
-  const canAddNew = trimmedInput.length > 0 && !isExactMatch && !isAlreadySelected;
+  const canAddNew =
+    trimmedInput.length > 0 && !isExactMatch && !isAlreadySelected;
 
+  // ── Handlers ─────────────────────────────────────────────────────────
   const handleSelect = useCallback(
     (value: string) => {
       const normalized = value.trim();
       if (!normalized) return;
 
-      // Check if already selected (case-insensitive)
       const existingIndex = values.findIndex(
         (v) => v.toLowerCase() === normalized.toLowerCase()
       );
 
       if (existingIndex >= 0) {
-        // Deselect — remove from values
+        // Deselect
         onChange(values.filter((_, i) => i !== existingIndex));
       } else {
-        // Select — add to values
+        // Select
         onChange([...values, normalized]);
       }
 
-      // Clear input and keep focus for rapid multi-select
-      setInputValue('');
+      // Keep input so user can keep typing to add more
     },
     [values, onChange]
   );
 
   const handleAddNew = useCallback(() => {
-    const normalized = trimmedInput;
-    if (!normalized || isAlreadySelected) return;
-    onChange([...values, normalized]);
-    setInputValue('');
+    if (!trimmedInput || isAlreadySelected) return;
+    onChange([...values, trimmedInput]);
+    setInputValue(''); // clear after adding
   }, [trimmedInput, isAlreadySelected, values, onChange]);
 
   const handleRemove = useCallback(
@@ -96,14 +105,13 @@ export function SearchableMultiSelect({
     [values, onChange]
   );
 
+  // ── Keyboard ─────────────────────────────────────────────────────────
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      // Backspace when input is empty: remove last selected value
       if (e.key === 'Backspace' && !inputValue && values.length > 0) {
         e.preventDefault();
         onChange(values.slice(0, -1));
       }
-      // Enter when there's a new value to add
       if (e.key === 'Enter' && canAddNew) {
         e.preventDefault();
         handleAddNew();
@@ -112,22 +120,24 @@ export function SearchableMultiSelect({
     [inputValue, values, onChange, canAddNew, handleAddNew]
   );
 
-  // Auto-focus the search input when popover opens
+  // ── Auto-focus input on open ─────────────────────────────────────────
   useEffect(() => {
     if (open) {
-      // Small delay to ensure the command input is rendered
-      const timer = setTimeout(() => {
-        inputRef.current?.focus();
-      }, 50);
+      const timer = setTimeout(() => inputRef.current?.focus(), 0);
       return () => clearTimeout(timer);
     }
+  }, [open]);
+
+  // Reset input when closing
+  useEffect(() => {
+    if (!open) setInputValue('');
   }, [open]);
 
   return (
     <div className={cn('space-y-2', className)}>
       <label className="text-sm font-medium text-foreground">{label}</label>
 
-      {/* Selected values as removable chips */}
+      {/* ── Selected chips ──────────────────────────────────────────── */}
       {values.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {values.map((value, index) => (
@@ -150,7 +160,7 @@ export function SearchableMultiSelect({
         </div>
       )}
 
-      {/* Autocomplete combobox */}
+      {/* ── Combobox trigger + popover ──────────────────────────────── */}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
@@ -167,7 +177,7 @@ export function SearchableMultiSelect({
             )}
           >
             <span className={cn('truncate', !inputValue && 'text-muted-foreground')}>
-              {inputValue || placeholder || `Search ${label.toLowerCase()}...`}
+              {inputValue || placeholder || `Select ${label.toLowerCase()}...`}
             </span>
             <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </button>
@@ -179,24 +189,23 @@ export function SearchableMultiSelect({
           sideOffset={4}
         >
           <Command shouldFilter={false} className="w-full">
-            <div className="flex items-center border-b px-3">
-              <CommandInput
-                ref={inputRef}
-                value={inputValue}
-                onValueChange={setInputValue}
-                onKeyDown={handleKeyDown}
-                placeholder={`Type to search ${label.toLowerCase()}...`}
-                className="h-9"
-              />
-            </div>
-            <CommandList className="max-h-[200px]">
-              {filteredSuggestions.length === 0 && !canAddNew && (
+            <CommandInput
+              ref={inputRef}
+              value={inputValue}
+              onValueChange={setInputValue}
+              onKeyDown={handleKeyDown}
+              placeholder={`Search ${label.toLowerCase()}...`}
+            />
+            <CommandList className="max-h-[220px]">
+              {/* Empty state: only when there are suggestions loaded but none match,
+                  AND the user has typed something */}
+              {filteredSuggestions.length === 0 && !canAddNew && inputValue.length > 0 && (
                 <CommandEmpty>
                   {emptyMessage || `No ${label.toLowerCase()} found.`}
                 </CommandEmpty>
               )}
 
-              {/* Existing suggestions */}
+              {/* ── Suggestion list: always visible when items exist ── */}
               {filteredSuggestions.length > 0 && (
                 <CommandGroup>
                   {filteredSuggestions.map((suggestion) => {
@@ -208,22 +217,29 @@ export function SearchableMultiSelect({
                         key={suggestion}
                         value={suggestion}
                         onSelect={() => handleSelect(suggestion)}
-                        className="cursor-pointer"
+                        className={cn('cursor-pointer', isSelected && 'bg-accent/50')}
                       >
                         <Check
                           className={cn(
-                            'mr-2 h-4 w-4',
+                            'mr-2 h-4 w-4 shrink-0',
                             isSelected ? 'opacity-100' : 'opacity-0'
                           )}
                         />
-                        <span>{suggestion}</span>
+                        <span
+                          className={cn(
+                            'flex-1',
+                            isSelected && 'font-medium'
+                          )}
+                        >
+                          {suggestion}
+                        </span>
                       </CommandItem>
                     );
                   })}
                 </CommandGroup>
               )}
 
-              {/* "Add new" option when input doesn't match any suggestion */}
+              {/* ── "Add new" option ──────────────────────────────────── */}
               {canAddNew && (
                 <CommandGroup>
                   <CommandItem

@@ -7,8 +7,6 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
-import { MultiValueInput } from './multi-value-input';
 import { SearchableMultiSelect } from './searchable-multi-select';
 import { ImageGallery } from './image-gallery';
 import { BarcodeScanner } from './barcode-scanner';
@@ -52,18 +50,44 @@ export function ProductForm({ mode }: ProductFormProps) {
 
   const [colourSuggestions, setColourSuggestions] = useState<string[]>([]);
   const [materialSuggestions, setMaterialSuggestions] = useState<string[]>([]);
+  const [additionalInfoSuggestions, setAdditionalInfoSuggestions] = useState<string[]>([]);
 
-  // Merge DB suggestions with locally-selected values so "Add X" values appear
-  // in the dropdown even if they're not yet in the database
+  // ── Predefined common values (always available in the dropdown) ──────
+  // These merge with whatever values exist in the database.
+  const DEFAULT_COLOURS = [
+    'Beige', 'Black', 'Blue', 'Brown', 'Gold', 'Green', 'Grey',
+    'Multicolor', 'Orange', 'Pink', 'Purple', 'Red', 'Silver',
+    'Transparent', 'White', 'Yellow',
+  ];
+
+  const DEFAULT_MATERIALS = [
+    'Aluminium', 'Bamboo', 'Ceramic', 'Copper', 'Cotton', 'Glass',
+    'Granite', 'Iron', 'Marble', 'Melamine', 'Nylon', 'Paper',
+    'Plastic', 'Porcelain', 'Rubber', 'Silicone', 'Stainless Steel',
+    'Steel', 'Stone', 'Wood',
+  ];
+
+  const DEFAULT_ADDITIONAL_INFO = [
+    'BPA Free', 'Dishwasher Safe', 'Eco-Friendly', 'Food Grade',
+    'Hand Wash Only', 'Heat Resistant', 'Lightweight', 'Microwave Safe',
+    'Non-Stick', 'Oven Safe', 'Rust Proof', 'Unbreakable',
+  ];
+
+  // Merge: DB values ∪ predefined defaults ∪ locally-selected values
   const mergedColourSuggestions = useMemo(() => {
-    const set = new Set([...colourSuggestions, ...formData.colours]);
+    const set = new Set([...DEFAULT_COLOURS, ...colourSuggestions, ...formData.colours]);
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }, [colourSuggestions, formData.colours]);
 
   const mergedMaterialSuggestions = useMemo(() => {
-    const set = new Set([...materialSuggestions, ...formData.materials]);
+    const set = new Set([...DEFAULT_MATERIALS, ...materialSuggestions, ...formData.materials]);
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }, [materialSuggestions, formData.materials]);
+
+  const mergedAdditionalInfoSuggestions = useMemo(() => {
+    const set = new Set([...DEFAULT_ADDITIONAL_INFO, ...additionalInfoSuggestions, ...formData.additionalInfo]);
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [additionalInfoSuggestions, formData.additionalInfo]);
 
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastSavedDataRef = useRef<string>('');
@@ -89,6 +113,7 @@ export function ProductForm({ mode }: ProductFormProps) {
           const data = await res.json();
           setColourSuggestions(data.colours || []);
           setMaterialSuggestions(data.materials || []);
+          setAdditionalInfoSuggestions(data.additionalInfo || []);
         }
       } catch (error) {
         console.error('Error fetching suggestions:', error);
@@ -519,11 +544,13 @@ export function ProductForm({ mode }: ProductFormProps) {
             placeholder="Search materials..."
             emptyMessage="No material found."
           />
-          <MultiValueInput
+          <SearchableMultiSelect
             label="Additional Info"
             values={formData.additionalInfo}
             onChange={(values) => handleFieldChange('additionalInfo', values)}
-            placeholder="e.g. Food Grade, Dishwasher Safe"
+            suggestions={mergedAdditionalInfoSuggestions}
+            placeholder="Search additional info..."
+            emptyMessage="No info found."
           />
         </CardContent>
       </Card>
