@@ -56,13 +56,6 @@ export function ExcelImport() {
       const formData = new FormData();
       formData.append('file', selectedFile);
 
-      // Clean up ghost products before import
-      try {
-        await fetch('/api/products/cleanup', { method: 'DELETE' });
-      } catch (e) {
-        // Ignore cleanup errors
-      }
-
       const res = await fetch('/api/products/import', {
         method: 'POST',
         body: formData,

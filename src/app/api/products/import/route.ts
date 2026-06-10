@@ -304,32 +304,52 @@ function getCellValue(worksheet: XLSX.WorkSheet, r: number, c: number): any {
 }
 
 /**
- * Fetch the list of columns that exist in the Supabase products table.
- * This allows us to skip fields that don't have a corresponding column yet.
+ * Cached table columns — fetched once, reused across all import requests.
+ * Avoids the slow OpenAPI call on every import.
  */
-async function getTableColumns(supabase: any): Promise<Set<string>> {
+let _cachedColumns: Set<string> | null = null;
+let _cacheTime = 0;
+const SCHEMA_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Fetch the list of columns that exist in the Supabase products table.
+ * Results are cached for 5 minutes to avoid repeated OpenAPI calls.
+ */
+async function getTableColumns(): Promise<Set<string>> {
+  // Return cached if still valid
+  if (_cachedColumns && (Date.now() - _cacheTime) < SCHEMA_CACHE_TTL) {
+    return _cachedColumns;
+  }
+
   try {
-    // Insert a dummy row with all nulls to discover which columns exist
-    // Actually, a better approach: use the OpenAPI/Swagger endpoint
     const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const apiKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
     const response = await fetch(`${baseUrl}/rest/v1/?apikey=${apiKey}`, {
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-      },
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
+
     if (response.ok) {
       const schema = await response.json();
       const props = schema?.definitions?.products?.properties;
       if (props) {
-        return new Set(Object.keys(props));
+        _cachedColumns = new Set(Object.keys(props));
+        _cacheTime = Date.now();
+        return _cachedColumns;
       }
     }
   } catch (e) {
-    console.warn('[IMPORT] Could not fetch table schema, will attempt all fields:', e);
+    console.warn('[IMPORT] Could not fetch table schema (will use fallback):', (e as Error).message);
   }
   // Fallback: assume all mapped columns exist
-  return new Set(Object.values(FIELD_TO_DB));
+  const fallback = new Set(Object.values(FIELD_TO_DB));
+  _cachedColumns = fallback;
+  _cacheTime = Date.now();
+  return fallback;
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -347,9 +367,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
 
-    // ── Detect available columns in Supabase ──
-    const tableColumns = await getTableColumns(supabase);
+    // ── Detect available columns in Supabase (cached) ──
+    const tableColumns = await getTableColumns();
     console.log(`[IMPORT] Supabase products table columns: ${JSON.stringify([...tableColumns].sort())}`);
+
+    // Pre-compute which DB columns are missing so we can skip them in the loop
+    const missingDbColumns = new Set<string>();
+    for (const dbCol of Object.values(FIELD_TO_DB)) {
+      if (!tableColumns.has(dbCol)) {
+        missingDbColumns.add(dbCol);
+      }
+    }
+    if (missingDbColumns.size > 0) {
+      console.log(`[IMPORT] Columns not in Supabase (will be skipped): ${JSON.stringify([...missingDbColumns])}`);
+    }
 
     // ── Read Excel file ──
     const buffer = Buffer.from(await file.arrayBuffer());
@@ -410,89 +441,119 @@ export async function POST(request: NextRequest) {
     // Log first 5 parsed rows for debugging
     const previewRows: { row: number; data: Record<string, any> }[] = [];
 
+    // ── Batch insert for performance ──
+    // Instead of inserting one row at a time (which is extremely slow over HTTP),
+    // we collect rows into batches and insert them in chunks.
+    const BATCH_SIZE = 100;
+    const batchRows: { rowNum: number; dbData: Record<string, any>; record: Record<string, any> }[] = [];
+
+    // First pass: parse all rows into DB-ready objects
     for (let r = dataStartRow; r <= range.e.r; r++) {
       const rowNum = r + 1; // 1-based Excel row number
 
+      // Read cell values for this row
+      const record: Record<string, any> = {};
+
+      for (const [colIdx, mapInfo] of mapping) {
+        const rawValue = getCellValue(worksheet, r, colIdx);
+
+        switch (mapInfo.type) {
+          case 'number':
+            record[mapInfo.field] = toNumber(rawValue);
+            break;
+          case 'string':
+            if (mapInfo.field === 'barcode') {
+              record[mapInfo.field] = toBarcode(rawValue);
+            } else {
+              record[mapInfo.field] = toString(rawValue);
+            }
+            break;
+          case 'array':
+            record[mapInfo.field] = parseArrayField(rawValue);
+            break;
+        }
+      }
+
+      // Capture preview for first 5 rows
+      if (previewRows.length < 5) {
+        previewRows.push({ row: rowNum, data: { ...record } });
+      }
+
+      // Skip completely empty rows
+      const allFieldsNull = Object.values(record).every(v => v === null || v === undefined);
+      if (allFieldsNull) {
+        skipped++;
+        continue;
+      }
+
+      // Convert camelCase → snake_case and skip missing DB columns
+      const dbData: Record<string, any> = {};
+      for (const [field, value] of Object.entries(record)) {
+        const dbKey = FIELD_TO_DB[field] || field;
+        if (!missingDbColumns.has(dbKey)) {
+          dbData[dbKey] = value;
+        }
+      }
+
+      batchRows.push({ rowNum, dbData, record });
+    }
+
+    console.log(`[IMPORT] Parsed ${batchRows.length} data rows (+ ${skipped} empty skipped), inserting in batches of ${BATCH_SIZE}...`);
+
+    // Second pass: insert in batches
+    for (let i = 0; i < batchRows.length; i += BATCH_SIZE) {
+      const batch = batchRows.slice(i, i + BATCH_SIZE);
+      const insertPayload = batch.map(b => b.dbData);
+
       try {
-        // Read cell values for this row
-        const record: Record<string, any> = {};
+        const { error: insertError } = await supabase
+          .from('products')
+          .insert(insertPayload);
 
-        for (const [colIdx, mapInfo] of mapping) {
-          const rawValue = getCellValue(worksheet, r, colIdx);
+        if (insertError) {
+          // Batch insert failed — could be a single bad row.
+          // Fall back to row-by-row for this batch to isolate the error.
+          console.warn(`[IMPORT] Batch ${Math.floor(i / BATCH_SIZE) + 1} failed (${insertError.message}), retrying row-by-row...`);
+          for (const { rowNum, dbData, record } of batch) {
+            try {
+              const { error: singleError } = await supabase
+                .from('products')
+                .insert(dbData);
 
-          switch (mapInfo.type) {
-            case 'number':
-              record[mapInfo.field] = toNumber(rawValue);
-              break;
-            case 'string':
-              // Use special barcode handling for the barcode field
-              if (mapInfo.field === 'barcode') {
-                record[mapInfo.field] = toBarcode(rawValue);
-              } else {
-                record[mapInfo.field] = toString(rawValue);
-              }
-              break;
-            case 'array':
-              record[mapInfo.field] = parseArrayField(rawValue);
-              break;
+              if (singleError) throw singleError;
+
+              imported++;
+              successDetails.push({
+                row: rowNum,
+                sr: record.sr ?? null,
+                description: record.englishDescription ?? null,
+                ndNumber: record.ndNumber ?? null,
+              });
+            } catch (err: any) {
+              errors++;
+              const errorMsg = err?.message || String(err);
+              errorDetails.push({ row: rowNum, error: errorMsg });
+            }
           }
-        }
-
-        // Capture preview for first 5 rows
-        if (previewRows.length < 5) {
-          previewRows.push({ row: rowNum, data: { ...record } });
-        }
-
-        // Skip completely empty rows (ALL fields are null)
-        const allFieldsNull = Object.values(record).every(v => v === null || v === undefined);
-        if (allFieldsNull) {
-          skipped++;
-          console.log(`[IMPORT] Row ${rowNum}: Skipped (all fields empty)`);
           continue;
         }
 
-        // IMPORTANT: Import ALL rows, even partially completed ones.
-        // We only skip if the row is truly empty (all nulls).
-
-        // Convert camelCase field names to snake_case for Supabase
-        // and filter out fields that don't have a corresponding DB column
-        const dbData: Record<string, any> = {};
-        for (const [field, value] of Object.entries(record)) {
-          const dbKey = FIELD_TO_DB[field] || field;
-          if (tableColumns.has(dbKey)) {
-            dbData[dbKey] = value;
-          } else {
-            console.warn(`[IMPORT] Column "${dbKey}" does not exist in Supabase table, skipping field`);
-          }
+        // All rows in the batch succeeded
+        imported += batch.length;
+        for (const { rowNum, record } of batch) {
+          successDetails.push({
+            row: rowNum,
+            sr: record.sr ?? null,
+            description: record.englishDescription ?? null,
+            ndNumber: record.ndNumber ?? null,
+          });
         }
-
-        const { error: insertError } = await supabase
-          .from('products')
-          .insert(dbData);
-
-        if (insertError) {
-          throw insertError;
-        }
-
-        imported++;
-        successDetails.push({
-          row: rowNum,
-          sr: record.sr ?? null,
-          description: record.englishDescription ?? null,
-          ndNumber: record.ndNumber ?? null,
-        });
-        console.log(`[IMPORT] Row ${rowNum}: OK - sr=${record.sr ?? '-'}, desc="${record.englishDescription ?? '-'}", nd=${record.ndNumber ?? '-'}`);
       } catch (err: any) {
-        errors++;
-        const errorMsg = err?.message || String(err);
-        // Try to get a data preview
-        const dataPreview: Record<string, any> = {};
-        for (const [colIdx, mapInfo] of mapping) {
-          dataPreview[mapInfo.field] = getCellValue(worksheet, r, colIdx);
+        // Unexpected error in batch
+        errors += batch.length;
+        for (const { rowNum } of batch) {
+          errorDetails.push({ row: rowNum, error: err?.message || String(err) });
         }
-        const dataStr = JSON.stringify(dataPreview).substring(0, 200);
-        errorDetails.push({ row: rowNum, error: errorMsg, data: dataStr });
-        console.error(`[IMPORT] Row ${rowNum}: FAILED - ${errorMsg}`);
       }
     }
 
@@ -500,14 +561,6 @@ export async function POST(request: NextRequest) {
     const totalProcessed = imported + errors + skipped;
 
     console.log(`[IMPORT] Complete: ${imported} imported, ${errors} errors, ${skipped} skipped, ${totalProcessed} total rows (${elapsedMs}ms)`);
-
-    // Log first 5 parsed rows
-    if (previewRows.length > 0) {
-      console.log(`[IMPORT] First ${previewRows.length} parsed rows:`);
-      for (const pr of previewRows) {
-        console.log(`  Row ${pr.row}: ${JSON.stringify(pr.data)}`);
-      }
-    }
 
     return NextResponse.json({
       imported,
