@@ -108,11 +108,10 @@ export async function GET(request: NextRequest) {
     }
 
     // ── Suggestions mode ──
-    // Returns distinct colour, material, and additional_info values from all products.
+    // Returns distinct colour and material values from all products.
     if (mode === 'suggestions') {
       const allColours: string[] = [];
       const allMaterials: string[] = [];
-      const allAdditionalInfo: string[] = [];
       let offset = 0;
       const batchSize = 1000;
       let hasMore = true;
@@ -120,7 +119,7 @@ export async function GET(request: NextRequest) {
       while (hasMore) {
         const { data, error } = await supabase
           .from('products')
-          .select('colours, materials, additional_info')
+          .select('colours, materials')
           .order('sr', { ascending: true, nullsFirst: true })
           .range(offset, offset + batchSize - 1);
 
@@ -164,22 +163,6 @@ export async function GET(request: NextRequest) {
                 }
               }
             }
-            // Flatten additional_info
-            if (row.additional_info) {
-              if (Array.isArray(row.additional_info)) {
-                allAdditionalInfo.push(...row.additional_info.filter(Boolean));
-              } else if (typeof row.additional_info === 'string') {
-                try {
-                  const parsed = JSON.parse(row.additional_info);
-                  if (Array.isArray(parsed)) allAdditionalInfo.push(...parsed.filter(Boolean));
-                } catch {
-                  row.additional_info.split(/[,;|]/).forEach((v: string) => {
-                    const trimmed = v.trim();
-                    if (trimmed) allAdditionalInfo.push(trimmed);
-                  });
-                }
-              }
-            }
           }
           hasMore = data.length === batchSize;
           offset += batchSize;
@@ -193,14 +176,10 @@ export async function GET(request: NextRequest) {
       const uniqueMaterials = [...new Set(allMaterials.map(v => v.trim()).filter(Boolean))].sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: 'base' })
       );
-      const uniqueAdditionalInfo = [...new Set(allAdditionalInfo.map(v => v.trim()).filter(Boolean))].sort((a, b) =>
-        a.localeCompare(b, undefined, { sensitivity: 'base' })
-      );
 
       return NextResponse.json({
         colours: uniqueColours,
         materials: uniqueMaterials,
-        additionalInfo: uniqueAdditionalInfo,
       });
     }
 
