@@ -88,6 +88,8 @@ export function ProductTable() {
     setNdGroups,
     toggleGroup,
     setSelectedNdNumber,
+    scrollPosition,
+    setScrollPosition,
   } = useInventoryStore();
 
   const [showFilters, setShowFilters] = useState(false);
@@ -211,9 +213,21 @@ export function ProductTable() {
   };
 
   const openProduct = (product: Product) => {
+    // Save current scroll position so we can restore it after returning from edit
+    setScrollPosition(window.scrollY);
     setCurrentProduct(product);
     setView('product-detail');
   };
+
+  // ── Restore scroll position when returning from edit/save ──
+  useEffect(() => {
+    if (scrollPosition > 0) {
+      // Use requestAnimationFrame to ensure the DOM has rendered
+      requestAnimationFrame(() => {
+        window.scrollTo(0, scrollPosition);
+      });
+    }
+  }, []); // Only on mount
 
   const toggleSortOrder = () => {
     setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');

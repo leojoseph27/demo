@@ -89,6 +89,9 @@ interface InventoryState {
   expandedGroups: Set<string>;
   selectedNdNumber: string;
 
+  // Scroll position preservation
+  scrollPosition: number;
+
   // Loading states
   isLoading: boolean;
   isSaving: boolean;
@@ -118,6 +121,7 @@ interface InventoryState {
   setNdGroups: (groups: NdGroup[]) => void;
   toggleGroup: (ndNumber: string) => void;
   setSelectedNdNumber: (ndNumber: string) => void;
+  setScrollPosition: (position: number) => void;
 }
 
 export const useInventoryStore = create<InventoryState>((set, get) => ({
@@ -155,6 +159,9 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
   ndGroups: [],
   expandedGroups: new Set<string>(),
   selectedNdNumber: '',
+
+  // Scroll position
+  scrollPosition: 0,
 
   // Loading states
   isLoading: false,
@@ -199,4 +206,5 @@ export const useInventoryStore = create<InventoryState>((set, get) => ({
     return { expandedGroups: next };
   }),
   setSelectedNdNumber: (ndNumber) => set({ selectedNdNumber: ndNumber, currentPage: 1 }),
+  setScrollPosition: (position) => set({ scrollPosition: position }),
 }));

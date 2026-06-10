@@ -144,7 +144,7 @@ export function ProductDetail() {
     <div className="space-y-4 pb-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={goBack} className="h-9 w-9 p-0">
+        <Button variant="ghost" size="sm" onClick={() => setView('products')} className="h-9 w-9 p-0">
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div className="flex-1">

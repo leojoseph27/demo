@@ -234,7 +234,7 @@ export function ProductForm({ mode }: ProductFormProps) {
 
         if (!isAutoSave) {
           toast.success(mode === 'add' ? 'Product created successfully!' : 'Product updated successfully!');
-          setView('product-detail');
+          setView('products');
         }
       } else {
         setSaveStatus('error');
