@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { MultiValueInput } from './multi-value-input';
 import { SearchableMultiSelect } from './searchable-multi-select';
 import { ImageGallery } from './image-gallery';
 import { BarcodeScanner } from './barcode-scanner';
@@ -50,8 +51,6 @@ export function ProductForm({ mode }: ProductFormProps) {
 
   const [colourSuggestions, setColourSuggestions] = useState<string[]>([]);
   const [materialSuggestions, setMaterialSuggestions] = useState<string[]>([]);
-  const [additionalInfoSuggestions, setAdditionalInfoSuggestions] = useState<string[]>([]);
-
   // ── Predefined common values (always available in the dropdown) ──────
   // These merge with whatever values exist in the database.
   const DEFAULT_COLOURS = [
@@ -67,12 +66,6 @@ export function ProductForm({ mode }: ProductFormProps) {
     'Steel', 'Stone', 'Wood',
   ];
 
-  const DEFAULT_ADDITIONAL_INFO = [
-    'BPA Free', 'Dishwasher Safe', 'Eco-Friendly', 'Food Grade',
-    'Hand Wash Only', 'Heat Resistant', 'Lightweight', 'Microwave Safe',
-    'Non-Stick', 'Oven Safe', 'Rust Proof', 'Unbreakable',
-  ];
-
   // Merge: DB values ∪ predefined defaults ∪ locally-selected values
   const mergedColourSuggestions = useMemo(() => {
     const set = new Set([...DEFAULT_COLOURS, ...colourSuggestions, ...formData.colours]);
@@ -83,11 +76,6 @@ export function ProductForm({ mode }: ProductFormProps) {
     const set = new Set([...DEFAULT_MATERIALS, ...materialSuggestions, ...formData.materials]);
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }, [materialSuggestions, formData.materials]);
-
-  const mergedAdditionalInfoSuggestions = useMemo(() => {
-    const set = new Set([...DEFAULT_ADDITIONAL_INFO, ...additionalInfoSuggestions, ...formData.additionalInfo]);
-    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-  }, [additionalInfoSuggestions, formData.additionalInfo]);
 
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastSavedDataRef = useRef<string>('');
@@ -113,7 +101,6 @@ export function ProductForm({ mode }: ProductFormProps) {
           const data = await res.json();
           setColourSuggestions(data.colours || []);
           setMaterialSuggestions(data.materials || []);
-          setAdditionalInfoSuggestions(data.additionalInfo || []);
         }
       } catch (error) {
         console.error('Error fetching suggestions:', error);
@@ -544,13 +531,11 @@ export function ProductForm({ mode }: ProductFormProps) {
             placeholder="Search materials..."
             emptyMessage="No material found."
           />
-          <SearchableMultiSelect
+          <MultiValueInput
             label="Additional Info"
             values={formData.additionalInfo}
             onChange={(values) => handleFieldChange('additionalInfo', values)}
-            suggestions={mergedAdditionalInfoSuggestions}
-            placeholder="Search additional info..."
-            emptyMessage="No info found."
+            placeholder="e.g. Food Grade, Dishwasher Safe"
           />
         </CardContent>
       </Card>
