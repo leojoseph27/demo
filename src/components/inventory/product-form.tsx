@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { MultiValueInput } from './multi-value-input';
+import { SearchableMultiSelect } from './searchable-multi-select';
 import { ImageGallery } from './image-gallery';
 import { BarcodeScanner } from './barcode-scanner';
 import { useInventoryStore, Product, DuplicateCheck } from '@/store/inventory-store';
@@ -49,6 +50,21 @@ export function ProductForm({ mode }: ProductFormProps) {
     pcs: '',
   });
 
+  const [colourSuggestions, setColourSuggestions] = useState<string[]>([]);
+  const [materialSuggestions, setMaterialSuggestions] = useState<string[]>([]);
+
+  // Merge DB suggestions with locally-selected values so "Add X" values appear
+  // in the dropdown even if they're not yet in the database
+  const mergedColourSuggestions = useMemo(() => {
+    const set = new Set([...colourSuggestions, ...formData.colours]);
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [colourSuggestions, formData.colours]);
+
+  const mergedMaterialSuggestions = useMemo(() => {
+    const set = new Set([...materialSuggestions, ...formData.materials]);
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [materialSuggestions, formData.materials]);
+
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastSavedDataRef = useRef<string>('');
 
@@ -63,6 +79,23 @@ export function ProductForm({ mode }: ProductFormProps) {
       return [];
     }
   };
+
+  // Fetch colour and material suggestions from the database
+  useEffect(() => {
+    const fetchSuggestions = async () => {
+      try {
+        const res = await fetch('/api/products?mode=suggestions');
+        if (res.ok) {
+          const data = await res.json();
+          setColourSuggestions(data.colours || []);
+          setMaterialSuggestions(data.materials || []);
+        }
+      } catch (error) {
+        console.error('Error fetching suggestions:', error);
+      }
+    };
+    fetchSuggestions();
+  }, []);
 
   useEffect(() => {
     if (mode === 'edit' && currentProduct) {
@@ -470,17 +503,21 @@ export function ProductForm({ mode }: ProductFormProps) {
           <CardTitle className="text-base">Properties</CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
-          <MultiValueInput
+          <SearchableMultiSelect
             label="Colour"
             values={formData.colours}
             onChange={(values) => handleFieldChange('colours', values)}
-            placeholder="e.g. Silver, Black, Gold"
+            suggestions={mergedColourSuggestions}
+            placeholder="Search colours..."
+            emptyMessage="No colour found."
           />
-          <MultiValueInput
+          <SearchableMultiSelect
             label="Material"
             values={formData.materials}
             onChange={(values) => handleFieldChange('materials', values)}
-            placeholder="e.g. Steel, Plastic, Wood"
+            suggestions={mergedMaterialSuggestions}
+            placeholder="Search materials..."
+            emptyMessage="No material found."
           />
           <MultiValueInput
             label="Additional Info"

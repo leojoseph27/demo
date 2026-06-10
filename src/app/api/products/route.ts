@@ -107,6 +107,82 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ groups, totalGroups: groups.length });
     }
 
+    // ── Suggestions mode ──
+    // Returns distinct colour and material values from all products.
+    if (mode === 'suggestions') {
+      const allColours: string[] = [];
+      const allMaterials: string[] = [];
+      let offset = 0;
+      const batchSize = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('products')
+          .select('colours, materials')
+          .order('sr', { ascending: true, nullsFirst: true })
+          .range(offset, offset + batchSize - 1);
+
+        if (error) {
+          return NextResponse.json({ error: error.message }, { status: 500 });
+        }
+
+        if (!data || data.length === 0) {
+          hasMore = false;
+        } else {
+          for (const row of data) {
+            // Flatten colours
+            if (row.colours) {
+              if (Array.isArray(row.colours)) {
+                allColours.push(...row.colours.filter(Boolean));
+              } else if (typeof row.colours === 'string') {
+                try {
+                  const parsed = JSON.parse(row.colours);
+                  if (Array.isArray(parsed)) allColours.push(...parsed.filter(Boolean));
+                } catch {
+                  row.colours.split(/[,;|]/).forEach((v: string) => {
+                    const trimmed = v.trim();
+                    if (trimmed) allColours.push(trimmed);
+                  });
+                }
+              }
+            }
+            // Flatten materials
+            if (row.materials) {
+              if (Array.isArray(row.materials)) {
+                allMaterials.push(...row.materials.filter(Boolean));
+              } else if (typeof row.materials === 'string') {
+                try {
+                  const parsed = JSON.parse(row.materials);
+                  if (Array.isArray(parsed)) allMaterials.push(...parsed.filter(Boolean));
+                } catch {
+                  row.materials.split(/[,;|]/).forEach((v: string) => {
+                    const trimmed = v.trim();
+                    if (trimmed) allMaterials.push(trimmed);
+                  });
+                }
+              }
+            }
+          }
+          hasMore = data.length === batchSize;
+          offset += batchSize;
+        }
+      }
+
+      // Deduplicate and sort alphabetically (case-insensitive)
+      const uniqueColours = [...new Set(allColours.map(v => v.trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: 'base' })
+      );
+      const uniqueMaterials = [...new Set(allMaterials.map(v => v.trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: 'base' })
+      );
+
+      return NextResponse.json({
+        colours: uniqueColours,
+        materials: uniqueMaterials,
+      });
+    }
+
     // ── Normal product listing mode ──
     const search = searchParams.get('search') || '';
     const material = searchParams.get('material') || '';
