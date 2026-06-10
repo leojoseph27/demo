@@ -51,6 +51,10 @@ export function ProductForm({ mode }: ProductFormProps) {
 
   const [colourSuggestions, setColourSuggestions] = useState<string[]>([]);
   const [materialSuggestions, setMaterialSuggestions] = useState<string[]>([]);
+  // ── Custom values added via "+" button (persisted in localStorage) ──
+  const [customColours, setCustomColours] = useState<string[]>([]);
+  const [customMaterials, setCustomMaterials] = useState<string[]>([]);
+
   // ── Predefined common values (always available in the dropdown) ──────
   // These merge with whatever values exist in the database.
   const DEFAULT_COLOURS = [
@@ -66,16 +70,16 @@ export function ProductForm({ mode }: ProductFormProps) {
     'Steel', 'Stone', 'Wood',
   ];
 
-  // Merge: DB values ∪ predefined defaults ∪ locally-selected values
+  // Merge: DB values ∪ predefined defaults ∪ custom localStorage values ∪ locally-selected values
   const mergedColourSuggestions = useMemo(() => {
-    const set = new Set([...DEFAULT_COLOURS, ...colourSuggestions, ...formData.colours]);
+    const set = new Set([...DEFAULT_COLOURS, ...colourSuggestions, ...customColours, ...formData.colours]);
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-  }, [colourSuggestions, formData.colours]);
+  }, [colourSuggestions, customColours, formData.colours]);
 
   const mergedMaterialSuggestions = useMemo(() => {
-    const set = new Set([...DEFAULT_MATERIALS, ...materialSuggestions, ...formData.materials]);
+    const set = new Set([...DEFAULT_MATERIALS, ...materialSuggestions, ...customMaterials, ...formData.materials]);
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-  }, [materialSuggestions, formData.materials]);
+  }, [materialSuggestions, customMaterials, formData.materials]);
 
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastSavedDataRef = useRef<string>('');
@@ -92,6 +96,20 @@ export function ProductForm({ mode }: ProductFormProps) {
     }
   };
 
+  // Load custom colours/materials from localStorage on mount
+  useEffect(() => {
+    try {
+      const storedColours = localStorage.getItem('customColours');
+      if (storedColours) {
+        try { setCustomColours(JSON.parse(storedColours)); } catch { /* ignore bad data */ }
+      }
+      const storedMaterials = localStorage.getItem('customMaterials');
+      if (storedMaterials) {
+        try { setCustomMaterials(JSON.parse(storedMaterials)); } catch { /* ignore bad data */ }
+      }
+    } catch { /* localStorage may not be available */ }
+  }, []);
+
   // Fetch colour and material suggestions from the database
   useEffect(() => {
     const fetchSuggestions = async () => {
@@ -107,6 +125,28 @@ export function ProductForm({ mode }: ProductFormProps) {
       }
     };
     fetchSuggestions();
+  }, []);
+
+  // ── Persist new custom colour to localStorage ──
+  const handleNewColourPersist = useCallback((value: string) => {
+    setCustomColours(prev => {
+      // Avoid duplicates (case-insensitive)
+      if (prev.some(v => v.toLowerCase() === value.toLowerCase())) return prev;
+      const updated = [...prev, value];
+      try { localStorage.setItem('customColours', JSON.stringify(updated)); } catch { /* */ }
+      return updated;
+    });
+  }, []);
+
+  // ── Persist new custom material to localStorage ──
+  const handleNewMaterialPersist = useCallback((value: string) => {
+    setCustomMaterials(prev => {
+      // Avoid duplicates (case-insensitive)
+      if (prev.some(v => v.toLowerCase() === value.toLowerCase())) return prev;
+      const updated = [...prev, value];
+      try { localStorage.setItem('customMaterials', JSON.stringify(updated)); } catch { /* */ }
+      return updated;
+    });
   }, []);
 
   useEffect(() => {
@@ -522,6 +562,8 @@ export function ProductForm({ mode }: ProductFormProps) {
             suggestions={mergedColourSuggestions}
             placeholder="Search colours..."
             emptyMessage="No colour found."
+            allowAddNew
+            onNewValuePersist={handleNewColourPersist}
           />
           <SearchableMultiSelect
             label="Material"
@@ -530,6 +572,8 @@ export function ProductForm({ mode }: ProductFormProps) {
             suggestions={mergedMaterialSuggestions}
             placeholder="Search materials..."
             emptyMessage="No material found."
+            allowAddNew
+            onNewValuePersist={handleNewMaterialPersist}
           />
           <MultiValueInput
             label="Additional Info"
