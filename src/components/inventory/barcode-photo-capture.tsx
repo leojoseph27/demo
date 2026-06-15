@@ -14,75 +14,35 @@ const CROP_HEIGHT_PCT = 0.18;
 const SCAN_ZONE_WIDTH_PCT = 0.85;
 
 /**
- * Extract the best number from OCR text that could be a barcode/product code.
- * These are typically just numbers printed on product packaging.
+ * Extract ALL digits from OCR text and join them into one continuous number.
+ *
+ * The scan area is treated as a barcode-number capture zone.
+ * All detected digits are merged regardless of spacing, line breaks,
+ * or formatting gaps.
+ *
+ * Examples:
+ *   "1020 0000 1249"  →  "102000001249"
+ *   "1020    00001249" →  "102000001249"
+ *   "1 0200 0001 249"  →  "102000001249"
+ *   "1020\n0000\n1249" →  "102000001249"
  */
 function extractNumberFromOcr(text: string): string | null {
-  console.log('[BarcodeCapture] extractNumberFromOcr input:', JSON.stringify(text));
+  console.log('[BarcodeCapture] extractNumberFromOcr raw input:', JSON.stringify(text));
 
-  // Strategy 1: Find all groups of digits (with optional spaces/hyphens between them)
-  // e.g. "628 1007 0270" or "628-1007-0270" or "6281007027013"
-  const digitGroups: { value: string; raw: string }[] = [];
+  // Strip everything that is not a digit — spaces, line breaks, letters, symbols
+  const allDigits = text.replace(/[^0-9]/g, '');
 
-  // Find continuous digit sequences and digit+separator sequences
-  const patterns = [
-    /\d[\d\s\-]{4,}/g,  // digit followed by 4+ digits/spaces/hyphens
-    /\d{4,}/g,           // 4+ continuous digits
-  ];
+  console.log('[BarcodeCapture] All digits joined:', allDigits, `(length: ${allDigits.length})`);
 
-  for (const pat of patterns) {
-    let match;
-    while ((match = pat.exec(text)) !== null) {
-      const raw = match[0];
-      const digitsOnly = raw.replace(/[\s\-]/g, '');
-      if (digitsOnly.length >= 4 && /^\d+$/.test(digitsOnly)) {
-        digitGroups.push({ value: digitsOnly, raw });
-      }
-    }
+  // Need at least 4 digits to be meaningful
+  if (allDigits.length < 4) {
+    console.log('[BarcodeCapture] Too few digits (<4), rejecting');
+    return null;
   }
 
-  // Also try joining all digits in the entire text
-  const allDigits = text.replace(/[^\d]/g, '');
-  if (allDigits.length >= 4) {
-    digitGroups.push({ value: allDigits, raw: allDigits });
-  }
-
-  // Deduplicate by value
-  const seen = new Set<string>();
-  const unique = digitGroups.filter(g => {
-    if (seen.has(g.value)) return false;
-    seen.add(g.value);
-    return true;
-  });
-
-  console.log('[BarcodeCapture] Digit groups found:', unique.map(g => g.value));
-
-  if (unique.length === 0) return null;
-
-  // Preferred lengths for product codes (in order): 13, 12, 8, 14, then any >= 4
-  const preferredLengths = [13, 12, 8, 14, 10, 11, 9, 7, 6, 5, 4];
-
-  for (const len of preferredLengths) {
-    // Exact match
-    const exact = unique.find(g => g.value.length === len);
-    if (exact) return exact.value;
-
-    // Substring match from longer sequences
-    for (const g of unique) {
-      if (g.value.length > len) {
-        // Try from start
-        const prefix = g.value.substring(0, len);
-        if (prefix[0] !== '0') return prefix;
-        // Try from end
-        const suffix = g.value.substring(g.value.length - len);
-        if (suffix[0] !== '0') return suffix;
-      }
-    }
-  }
-
-  // Fallback: longest sequence
-  const sorted = [...unique].sort((a, b) => b.value.length - a.value.length);
-  return sorted[0]?.value || null;
+  // Return the full continuous digit string
+  // The scan zone is a barcode capture zone — all digits belong together
+  return allDigits;
 }
 
 /**
@@ -584,14 +544,14 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
                 className="flex-1 h-12 text-white border-white/30 hover:bg-white/10 gap-2"
               >
                 <RotateCcw className="h-5 w-5" />
-                Retake
+                Retake Photo
               </Button>
               <Button
                 onClick={confirmBarcode}
                 className="flex-1 h-12 bg-green-600 hover:bg-green-700 text-white gap-2"
               >
                 <Check className="h-5 w-5" />
-                Confirm
+                Search Product
               </Button>
             </div>
           </div>
