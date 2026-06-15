@@ -33,10 +33,10 @@ import {
   Coins,
   FileDown,
   ScanBarcode,
-  Camera,
+  Zap,
 } from 'lucide-react';
 import { BarcodeScanner } from '@/components/inventory/barcode-scanner-modal';
-import { BarcodePhotoCapture } from '@/components/inventory/barcode-photo-capture';
+import { ScannerPro } from '@/components/inventory/scanner-pro';
 
 /** Format price as KD */
 function formatPrice(price: number | null): string {
@@ -105,7 +105,7 @@ export function ProductTable() {
   const [isExporting, setIsExporting] = useState(false);
   const [localSearch, setLocalSearch] = useState(searchQuery);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
-  const [showPhotoCapture, setShowPhotoCapture] = useState(false);
+  const [showScannerPro, setShowScannerPro] = useState(false);
   const totalPages = Math.ceil(totalProducts / 50);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -462,16 +462,16 @@ export function ProductTable() {
           <ScanBarcode className="h-5 w-5" />
           <span className="text-xs">Scan</span>
         </Button>
-        {/* Capture Barcode Photo Button */}
+        {/* Scanner Pro Button */}
         <Button
           variant="outline"
           size="sm"
-          onClick={() => setShowPhotoCapture(true)}
+          onClick={() => setShowScannerPro(true)}
           className="h-11 px-3 shrink-0 gap-1.5"
-          title="Capture Barcode Photo"
+          title="Scanner Pro — Zoom scanning for small barcodes"
         >
-          <Camera className="h-5 w-5" />
-          <span className="text-xs">Photo</span>
+          <Zap className="h-5 w-5" />
+          <span className="text-xs">Pro</span>
         </Button>
       </div>
 
@@ -488,23 +488,16 @@ export function ProductTable() {
         />
       )}
 
-      {/* Barcode Photo Capture Modal */}
-      {showPhotoCapture && (
-        <BarcodePhotoCapture
-          onScan={(barcode, ndNumber) => {
-            setShowPhotoCapture(false);
-            // Search by barcode first; if no barcode, search by ND number
-            const searchValue = barcode || ndNumber || '';
-            setLocalSearch(searchValue);
-            setSearchQuery(searchValue);
+      {/* Scanner Pro Modal */}
+      {showScannerPro && (
+        <ScannerPro
+          onScan={(barcode) => {
+            setShowScannerPro(false);
+            setLocalSearch(barcode);
+            setSearchQuery(barcode);
             setCurrentPage(1);
-            // If we have both, store ndNumber for fallback search later
-            if (ndNumber && barcode) {
-              // Store ND number so user can retry if barcode search yields nothing
-              (window as any).__lastNdNumber = ndNumber;
-            }
           }}
-          onClose={() => setShowPhotoCapture(false)}
+          onClose={() => setShowScannerPro(false)}
         />
       )}
 
