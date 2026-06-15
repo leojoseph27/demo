@@ -491,11 +491,18 @@ export function ProductTable() {
       {/* Barcode Photo Capture Modal */}
       {showPhotoCapture && (
         <BarcodePhotoCapture
-          onScan={(barcode) => {
+          onScan={(barcode, ndNumber) => {
             setShowPhotoCapture(false);
-            setLocalSearch(barcode);
-            setSearchQuery(barcode);
+            // Search by barcode first; if no barcode, search by ND number
+            const searchValue = barcode || ndNumber || '';
+            setLocalSearch(searchValue);
+            setSearchQuery(searchValue);
             setCurrentPage(1);
+            // If we have both, store ndNumber for fallback search later
+            if (ndNumber && barcode) {
+              // Store ND number so user can retry if barcode search yields nothing
+              (window as any).__lastNdNumber = ndNumber;
+            }
           }}
           onClose={() => setShowPhotoCapture(false)}
         />

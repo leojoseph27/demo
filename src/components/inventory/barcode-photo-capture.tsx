@@ -22,8 +22,13 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { X, Flashlight, FlashlightOff, Camera, RotateCcw, Loader2, Check, AlertCircle } from 'lucide-react';
 
+interface OcrExtractionResult {
+  barcodeDigits: string | null;  // e.g. "6901957183343"
+  ndNumber: string | null;       // e.g. "ND-5271"
+}
+
 interface BarcodePhotoCaptureProps {
-  onScan: (barcode: string) => void;
+  onScan: (barcode: string, ndNumber?: string) => void;
   onClose: () => void;
 }
 
@@ -45,35 +50,111 @@ const SCAN_BOX_WIDTH_PCT = 0.85;
 const SCAN_BOX_HEIGHT_PCT = 0.28;
 
 /**
- * Extract ALL digits from OCR text and join them into one continuous number.
- *
- * The scan area is treated as a barcode-number capture zone.
- * All detected digits are merged regardless of spacing, line breaks,
- * or formatting gaps.
- *
- * Examples:
- *   "1020 0000 1249"  →  "102000001249"
- *   "1020    00001249" →  "102000001249"
- *   "1 0200 0001 249"  →  "102000001249"
- *   "1020\n0000\n1249" →  "102000001249"
+ * Text patterns to IGNORE from OCR output.
+ * These are common label noise that should not be treated as barcode or ND data.
  */
-function extractNumberFromOcr(text: string): string | null {
-  console.log('[BarcodeCapture] extractNumberFromOcr raw input:', JSON.stringify(text));
+const IGNORE_PATTERNS = [
+  /made\s*in\s*china/i,
+  /made\s*in\s*\w+/i,
+  /china/i,
+  /product\s*of/i,
+];
 
-  // Strip everything that is not a digit — spaces, line breaks, letters, symbols
-  const allDigits = text.replace(/[^0-9]/g, '');
+/**
+ * Extract barcode digits and ND number from OCR text.
+ *
+ * Label structure example:
+ *   ND-5271
+ *   [BARCODE IMAGE]
+ *   6901957183343
+ *   MADE IN CHINA
+ *
+ * Extraction logic:
+ *   1. Find ND number: pattern "ND-XXXX" or "ND XXXX" (letters + digits with separator)
+ *   2. Find barcode digits: longest continuous digit sequence (8-14 digits)
+ *   3. Filter out noise like "MADE IN CHINA"
+ *
+ * Normalization:
+ *   "6901 9571 8334 3" → "6901957183343"
+ *   "ND - 5271" → "ND-5271"
+ */
+function extractFromOcr(text: string): OcrExtractionResult {
+  console.log('[BarcodeCapture] extractFromOcr raw input:', JSON.stringify(text));
 
-  console.log('[BarcodeCapture] All digits joined:', allDigits, `(length: ${allDigits.length})`);
+  const result: OcrExtractionResult = { barcodeDigits: null, ndNumber: null };
 
-  // Need at least 4 digits to be meaningful
-  if (allDigits.length < 4) {
-    console.log('[BarcodeCapture] Too few digits (<4), rejecting');
-    return null;
+  // Split into lines for line-by-line analysis
+  const lines = text
+    .split(/[\n\r]+/)
+    .map(l => l.trim())
+    .filter(l => l.length > 0);
+
+  console.log('[BarcodeCapture] OCR lines:', lines);
+
+  // ── Step 1: Extract ND Number ──
+  // Match patterns: ND-5271, ND - 5271, ND 5271, nd-5271, etc.
+  const ndRegex = /(?:ND|nd|Nd|nD)\s*[-–—]?\s*(\d{3,6})/g;
+  for (const line of lines) {
+    // Skip noise lines
+    if (IGNORE_PATTERNS.some(p => p.test(line))) continue;
+
+    const ndMatch = ndRegex.exec(line);
+    if (ndMatch) {
+      const digits = ndMatch[1];
+      result.ndNumber = `ND-${digits}`;
+      console.log('[BarcodeCapture] Found ND Number:', result.ndNumber, 'from line:', line);
+      break;
+    }
+  }
+  // Also try full-text match if line-by-line didn't find it
+  if (!result.ndNumber) {
+    const fullMatch = ndRegex.exec(text);
+    if (fullMatch) {
+      result.ndNumber = `ND-${fullMatch[1]}`;
+      console.log('[BarcodeCapture] Found ND Number (full text):', result.ndNumber);
+    }
   }
 
-  // Return the full continuous digit string
-  // The scan zone is a barcode capture zone — all digits belong together
-  return allDigits;
+  // ── Step 2: Extract barcode digits ──
+  // Strategy: find the longest digit-only sequence of 8-14 digits from a single line.
+  // This is likely the barcode number printed below the barcode image.
+  // We also check all digits combined across lines as a fallback.
+
+  let bestDigitLine: string | null = null;
+  let bestDigitLen = 0;
+
+  for (const line of lines) {
+    // Skip noise lines
+    if (IGNORE_PATTERNS.some(p => p.test(line))) continue;
+    // Skip ND number lines (they contain letters)
+    if (/^(?:ND|nd|Nd|nD)/i.test(line)) continue;
+
+    // Extract digits from this line, removing spaces/dashes
+    const digitsOnly = line.replace(/[^0-9]/g, '');
+    if (digitsOnly.length >= 8 && digitsOnly.length <= 14 && digitsOnly.length > bestDigitLen) {
+      bestDigitLine = digitsOnly;
+      bestDigitLen = digitsOnly.length;
+      console.log('[BarcodeCapture] Candidate barcode line:', line, '→ digits:', digitsOnly);
+    }
+  }
+
+  if (bestDigitLine) {
+    result.barcodeDigits = bestDigitLine;
+  } else {
+    // Fallback: join ALL digits from the entire text
+    const allDigits = text.replace(/[^0-9]/g, '');
+    if (allDigits.length >= 8 && allDigits.length <= 20) {
+      result.barcodeDigits = allDigits;
+      console.log('[BarcodeCapture] Barcode digits (fallback all joined):', allDigits);
+    } else if (allDigits.length >= 4) {
+      // Last resort: accept shorter sequences
+      result.barcodeDigits = allDigits;
+      console.log('[BarcodeCapture] Short digit sequence (last resort):', allDigits);
+    }
+  }
+
+  console.log('[BarcodeCapture] Extraction result:', result);
+  return result;
 }
 
 /**
@@ -149,6 +230,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
 
   const [croppedPreview, setCroppedPreview] = useState<string | null>(null);
   const [detectedBarcode, setDetectedBarcode] = useState<string | null>(null);
+  const [detectedNdNumber, setDetectedNdNumber] = useState<string | null>(null);
   const [detectionConfidence, setDetectionConfidence] = useState<DetectionConfidence | null>(null);
   const [processingStep, setProcessingStep] = useState<string>('');
   const [showPreview, setShowPreview] = useState(false); // show cropped barcode before decoding
@@ -264,8 +346,8 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     return cropCanvas;
   }, []);
 
-  // ── Run OCR with different configs and return best number found ──
-  const runOcrWithConfigs = useCallback(async (canvas: HTMLCanvasElement, label: string): Promise<string | null> => {
+  // ── Run OCR with different configs and return best extraction result ──
+  const runOcrWithConfigs = useCallback(async (canvas: HTMLCanvasElement, label: string): Promise<OcrExtractionResult | null> => {
     console.log(`[BarcodeCapture] Running OCR on: ${label} (${canvas.width}x${canvas.height})`);
 
     try {
@@ -273,14 +355,15 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
 
       // Try multiple PSM modes (page segmentation modes)
       const configs = [
-        { psm: '7', desc: 'single uniform text line' },
         { psm: '6', desc: 'uniform block of text' },
-        { psm: '13', desc: 'raw line (no OSD)' },
-        { psm: '8', desc: 'single word' },
+        { psm: '4', desc: 'single column of text' },
         { psm: '3', desc: 'fully automatic' },
+        { psm: '7', desc: 'single uniform text line' },
+        { psm: '13', desc: 'raw line (no OSD)' },
       ];
 
-      let bestResult: string | null = null;
+      let bestResult: OcrExtractionResult | null = null;
+      let bestScore = 0;
 
       for (const config of configs) {
         try {
@@ -288,7 +371,6 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
 
           await worker.setParameters({
             tessedit_pageseg_mode: config.psm,
-            // No whitelist — let Tesseract see all characters, we filter after
           });
 
           const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
@@ -298,12 +380,15 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
           const ocrText = data.text || '';
           console.log(`[BarcodeCapture] OCR PSM=${config.psm} (${config.desc}):`, JSON.stringify(ocrText));
 
-          const extracted = extractNumberFromOcr(ocrText);
-          if (extracted) {
-            console.log(`[BarcodeCapture] PSM=${config.psm} extracted:`, extracted);
-            if (!bestResult || extracted.length > bestResult.length) {
-              bestResult = extracted;
-            }
+          const extracted = extractFromOcr(ocrText);
+          // Score: barcode digits are worth more, ND number adds bonus
+          const score = (extracted.barcodeDigits ? extracted.barcodeDigits.length * 2 : 0)
+                     + (extracted.ndNumber ? 10 : 0);
+
+          if (score > bestScore) {
+            bestResult = extracted;
+            bestScore = score;
+            console.log(`[BarcodeCapture] PSM=${config.psm} new best (score=${score}):`, extracted);
           }
         } catch (err) {
           console.log(`[BarcodeCapture] PSM=${config.psm} failed:`, err);
@@ -432,6 +517,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     setShowPreview(true);
     setNoBarcodeFound(false);
     setDetectedBarcode(null);
+    setDetectedNdNumber(null);
     setDetectionConfidence(null);
   }, [cropScanBox]);
 
@@ -444,6 +530,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     setIsProcessing(true);
     setNoBarcodeFound(false);
     setDetectedBarcode(null);
+    setDetectedNdNumber(null);
     setDetectionConfidence(null);
 
     console.log('[BarcodeCapture] Original image size:', `${fullCanvas.width}x${fullCanvas.height}`);
@@ -453,7 +540,6 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     console.log('[BarcodeCapture] Cropped image size:', `${croppedCanvas.width}x${croppedCanvas.height}`);
 
     // ── Pre-process: scale up → greyscale → contrast → binarize ──
-    // Choose scale factor based on cropped size (aim for ~800px width for decoding)
     const targetWidth = 800;
     const autoScale = Math.max(2, Math.min(4, Math.ceil(targetWidth / croppedCanvas.width)));
     console.log(`[BarcodeCapture] Auto-scaling cropped region ${autoScale}x`);
@@ -466,50 +552,56 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     // ══════════════════════════════════════════════════════════
     let barcodeResult: string | null = null;
 
-    // Step 1a: Native BarcodeDetector on enhanced cropped region
     setProcessingStep('Decoding barcode...');
     barcodeResult = await tryBarcodeDetector(enhancedCanvas, 'enhanced cropped');
 
-    // Step 1b: Native BarcodeDetector on raw cropped region
     if (!barcodeResult) {
       setProcessingStep('Trying raw crop...');
       barcodeResult = await tryBarcodeDetector(croppedCanvas, 'cropped');
     }
 
-    // Step 1c: Native BarcodeDetector on full image
     if (!barcodeResult) {
       setProcessingStep('Decoding from full image...');
       barcodeResult = await tryBarcodeDetector(fullCanvas, 'full');
     }
 
-    // Step 1d: html5-qrcode on enhanced cropped region
     if (!barcodeResult) {
       setProcessingStep('Trying alternative decoder...');
       barcodeResult = await tryHtml5Qrcode(enhancedCanvas, 'enhanced cropped', 'barcode-photo-scan-element');
     }
 
-    // Step 1e: html5-qrcode on raw cropped region
     if (!barcodeResult) {
       setProcessingStep('Trying decoder on raw crop...');
       barcodeResult = await tryHtml5Qrcode(croppedCanvas, 'cropped', 'barcode-photo-scan-element');
     }
 
-    // Step 1f: html5-qrcode on full image
     if (!barcodeResult) {
       setProcessingStep('Trying decoder on full image...');
       barcodeResult = await tryHtml5Qrcode(fullCanvas, 'full', 'barcode-photo-scan-element-2');
     }
 
-    // If barcode decoded successfully, use it with High confidence — skip OCR
+    // If barcode decoded, still run OCR briefly on the raw crop to try to get ND number
+    // (ND number is never encoded in the barcode bars — it's always printed text)
+    let ocrNdNumber: string | null = null;
+    if (barcodeResult) {
+      console.log('[BarcodeCapture] Barcode decoded, also trying OCR for ND number...');
+      setProcessingStep('Checking for ND number...');
+      const quickOcr = await runOcrWithConfigs(croppedCanvas, 'ND number extraction');
+      if (quickOcr?.ndNumber) {
+        ocrNdNumber = quickOcr.ndNumber;
+      }
+    }
+
     if (barcodeResult) {
       console.log('[BarcodeCapture] ── Results summary ──');
       console.log('[BarcodeCapture]   Barcode decoded:', barcodeResult);
+      console.log('[BarcodeCapture]   ND Number:', ocrNdNumber || '(none)');
       console.log('[BarcodeCapture]   Confidence: High');
-      console.log('[BarcodeCapture]   OCR: skipped (barcode decoded)');
 
       setIsProcessing(false);
       setProcessingStep('');
       setDetectedBarcode(barcodeResult);
+      setDetectedNdNumber(ocrNdNumber);
       setDetectionConfidence('High');
       return;
     }
@@ -519,26 +611,22 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     // ══════════════════════════════════════════════════════════
     console.log('[BarcodeCapture] Barcode decoding failed, falling back to OCR...');
 
-    let ocrResult: string | null = null;
+    let ocrResult: OcrExtractionResult | null = null;
 
-    // Step 2a: OCR on enhanced cropped region
-    setProcessingStep('Reading numbers from scan area...');
-    ocrResult = await runOcrWithConfigs(enhancedCanvas, 'enhanced cropped');
+    setProcessingStep('Reading label text...');
+    ocrResult = await runOcrWithConfigs(croppedCanvas, 'cropped region');
 
-    // Step 2b: OCR on raw cropped region
-    if (!ocrResult) {
-      setProcessingStep('Trying raw crop OCR...');
-      ocrResult = await runOcrWithConfigs(croppedCanvas, 'cropped region');
+    if (!ocrResult?.barcodeDigits && !ocrResult?.ndNumber) {
+      setProcessingStep('Enhancing image and retrying...');
+      ocrResult = await runOcrWithConfigs(enhancedCanvas, 'enhanced cropped');
     }
 
-    // Step 2c: OCR on full image
-    if (!ocrResult) {
+    if (!ocrResult?.barcodeDigits && !ocrResult?.ndNumber) {
       setProcessingStep('Scanning full image...');
       ocrResult = await runOcrWithConfigs(fullCanvas, 'full image');
     }
 
-    // Step 2d: OCR on enhanced + scaled full image
-    if (!ocrResult) {
+    if (!ocrResult?.barcodeDigits && !ocrResult?.ndNumber) {
       setProcessingStep('Enhancing full image...');
       const scaledFull = scaleCanvas(fullCanvas, 2);
       const enhancedFull = preprocessCanvas(scaledFull, 130);
@@ -546,31 +634,36 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     }
 
     // ── Final result ──
+    const finalBarcode = ocrResult?.barcodeDigits || null;
+    const finalNdNumber = ocrResult?.ndNumber || null;
+
     console.log('[BarcodeCapture] ── Results summary ──');
-    console.log('[BarcodeCapture]   Barcode decoded:', '(none — decoding failed)');
-    console.log('[BarcodeCapture]   OCR result:', ocrResult || '(none)');
-    console.log('[BarcodeCapture]   Confidence:', ocrResult ? 'Low (OCR)' : 'N/A');
+    console.log('[BarcodeCapture]   Barcode (OCR):', finalBarcode || '(none)');
+    console.log('[BarcodeCapture]   ND Number:', finalNdNumber || '(none)');
+    console.log('[BarcodeCapture]   Confidence: Low (OCR)');
 
     setIsProcessing(false);
     setProcessingStep('');
 
-    if (ocrResult) {
-      setDetectedBarcode(ocrResult);
+    if (finalBarcode || finalNdNumber) {
+      setDetectedBarcode(finalBarcode);
+      setDetectedNdNumber(finalNdNumber);
       setDetectionConfidence('Low');
     } else {
       setNoBarcodeFound(true);
     }
   }, [cropScanBox, runOcrWithConfigs, tryBarcodeDetector, tryHtml5Qrcode]);
 
-  // ── Confirm detected barcode → search ──
+  // ── Confirm detected barcode → search (barcode first, then ND number) ──
   const confirmBarcode = useCallback(() => {
-    if (!detectedBarcode) return;
+    if (!detectedBarcode && !detectedNdNumber) return;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
-    onScan(detectedBarcode);
-  }, [detectedBarcode, onScan]);
+    // Pass barcode as primary, ndNumber as secondary fallback
+    onScan(detectedBarcode || '', detectedNdNumber || undefined);
+  }, [detectedBarcode, detectedNdNumber, onScan]);
 
   // ── Retry ──
   const retry = useCallback(() => {
@@ -579,6 +672,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     setIsProcessing(false);
     setCroppedPreview(null);
     setDetectedBarcode(null);
+    setDetectedNdNumber(null);
     setDetectionConfidence(null);
     setProcessingStep('');
     setShowPreview(false);
@@ -727,11 +821,11 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
           </div>
         )}
 
-        {/* ── DETECTED BARCODE: cropped preview + confirm/retake ── */}
-        {detectedBarcode && (
+        {/* ── DETECTED RESULT: barcode + ND number + confirm/retake ── */}
+        {(detectedBarcode || detectedNdNumber) && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 px-6 py-4">
             {croppedPreview && (
-              <div className="w-full max-w-xs mb-4">
+              <div className="w-full max-w-xs mb-3">
                 <p className="text-white/60 text-xs text-center mb-2">Scanned region:</p>
                 <div className={`border-2 rounded-lg overflow-hidden ${
                   detectionConfidence === 'High'
@@ -743,28 +837,39 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
               </div>
             )}
 
-            <div className={`rounded-xl px-6 py-4 mb-6 text-center ${
-              detectionConfidence === 'High'
-                ? 'bg-green-900/40 border border-green-500/50'
-                : 'bg-amber-900/40 border border-amber-500/50'
-            }`}>
-              <div className="flex items-center justify-center gap-2 mb-1">
-                <p className={`text-xs ${
+            <div className="w-full max-w-xs space-y-3 mb-6">
+              {/* Detected Barcode */}
+              {detectedBarcode && (
+                <div className={`rounded-xl px-5 py-3 text-center ${
                   detectionConfidence === 'High'
-                    ? 'text-green-400'
-                    : 'text-amber-400'
+                    ? 'bg-green-900/40 border border-green-500/50'
+                    : 'bg-amber-900/40 border border-amber-500/50'
                 }`}>
-                  Detected{detectionConfidence === 'High' ? '' : ' (OCR fallback)'}
-                </p>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                  detectionConfidence === 'High'
-                    ? 'bg-green-500/20 text-green-400'
-                    : 'bg-amber-500/20 text-amber-400'
-                }`}>
-                  Confidence: {detectionConfidence}
-                </span>
-              </div>
-              <p className="text-white text-2xl font-mono font-bold tracking-widest">{detectedBarcode}</p>
+                  <div className="flex items-center justify-center gap-2 mb-1">
+                    <p className={`text-xs font-medium ${
+                      detectionConfidence === 'High' ? 'text-green-400' : 'text-amber-400'
+                    }`}>
+                      Detected Barcode{detectionConfidence === 'High' ? '' : ' (OCR)'}
+                    </p>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                      detectionConfidence === 'High'
+                        ? 'bg-green-500/20 text-green-400'
+                        : 'bg-amber-500/20 text-amber-400'
+                    }`}>
+                      {detectionConfidence}
+                    </span>
+                  </div>
+                  <p className="text-white text-2xl font-mono font-bold tracking-widest">{detectedBarcode}</p>
+                </div>
+              )}
+
+              {/* Detected ND Number */}
+              {detectedNdNumber && (
+                <div className="rounded-xl px-5 py-3 text-center bg-blue-900/30 border border-blue-500/40">
+                  <p className="text-blue-400 text-xs font-medium mb-1">Detected ND Number</p>
+                  <p className="text-white text-xl font-mono font-bold tracking-wider">{detectedNdNumber}</p>
+                </div>
+              )}
             </div>
 
             <div className="flex gap-3 w-full max-w-xs">
@@ -785,7 +890,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
                 }`}
               >
                 <Check className="h-5 w-5" />
-                Search
+                Search Product
               </Button>
             </div>
           </div>
@@ -806,6 +911,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
               <AlertCircle className="h-10 w-10 text-amber-400 mx-auto mb-3" />
               <p className="text-amber-400 text-lg font-medium mb-2">No barcode detected</p>
               <p className="text-white/70 text-sm">Move closer and ensure the barcode fills most of the scan box.</p>
+              <p className="text-white/50 text-xs mt-1">The barcode, barcode number, or ND number should be visible.</p>
             </div>
             <Button
               variant="outline"
