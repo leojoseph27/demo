@@ -2,7 +2,7 @@
 cd /home/z/my-project
 
 # Start the server in a new process group, fully detached
-setsid node node_modules/.bin/next start -p 3000 >> /tmp/nextjs-prod.log 2>> /tmp/nextjs-prod-err.log &
+setsid env NODE_OPTIONS="--max-old-space-size=2048" node node_modules/next/dist/bin/next start -p 3000 >> /tmp/nextjs-prod.log 2>> /tmp/nextjs-prod-err.log &
 PID=$!
 echo "Started Next.js with PID $PID"
 

@@ -30,19 +30,15 @@ export const createClient = async () => {
   });
 };
 
-// Singleton admin client — reused across all API route invocations.
-// Avoids creating a new SupabaseClient instance per request, which can
-// leak HTTP agents and eventually exhaust file descriptors / memory.
-let _adminClient: SupabaseClient | null = null;
-
 /**
- * Create (or return the cached) Supabase admin client that bypasses RLS.
+ * Create a Supabase admin client that bypasses RLS.
  * Uses the service role key if available, otherwise falls back to anon key.
  * Only use this in API routes where elevated access is needed.
+ *
+ * Each call creates a fresh client to avoid connection pool exhaustion
+ * in serverless/container environments.
  */
 export const createAdminClient = (): SupabaseClient => {
-  if (_adminClient) return _adminClient;
-
   const key = supabaseServiceKey || supabaseAnonKey;
   if (!supabaseUrl || !key) {
     throw new Error(
@@ -50,12 +46,15 @@ export const createAdminClient = (): SupabaseClient => {
     );
   }
 
-  _adminClient = createSupabaseClient(supabaseUrl, key, {
+  return createSupabaseClient(supabaseUrl, key, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
     },
+    global: {
+      headers: {
+        'Connection': 'close',
+      },
+    },
   });
-
-  return _adminClient;
 };

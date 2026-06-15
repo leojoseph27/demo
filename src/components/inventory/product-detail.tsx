@@ -106,6 +106,15 @@ export function ProductDetail() {
       };
       setProduct(updatedProduct);
       setCurrentProduct(updatedProduct);
+      toast.success('Image uploaded successfully');
+    } else {
+      let errorMsg = 'Upload failed';
+      try {
+        const errData = await res.json();
+        errorMsg = errData.error || errorMsg;
+      } catch {}
+      toast.error(errorMsg);
+      throw new Error(errorMsg);
     }
   };
 

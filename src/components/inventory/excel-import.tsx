@@ -13,6 +13,8 @@ interface ImportResult {
   errors: number;
   skipped: number;
   total: number;
+  withPrice?: number;
+  withoutPrice?: number;
   elapsedMs?: number;
   detectedHeaders?: string[];
   columnMapping?: Record<string, string>;
@@ -228,6 +230,12 @@ export function ExcelImport() {
                     <div className="text-sm text-muted-foreground mt-1 space-y-0.5">
                       <p>Total rows in file: {result.total}</p>
                       <p className="text-emerald-600">Successfully inserted: {result.imported}</p>
+                      {result.withPrice != null && (
+                        <p className="text-emerald-600">Products with price: {result.withPrice}</p>
+                      )}
+                      {result.withoutPrice != null && result.withoutPrice > 0 && (
+                        <p className="text-amber-600">Products without price: {result.withoutPrice}</p>
+                      )}
                       {result.skipped > 0 && (
                         <p className="text-muted-foreground">Skipped (empty rows): {result.skipped}</p>
                       )}

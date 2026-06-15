@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  // output: "standalone", // Disabled: standalone mode doesn't include @supabase packages
   experimental: {
     serverActions: {
       bodySizeLimit: "10mb",

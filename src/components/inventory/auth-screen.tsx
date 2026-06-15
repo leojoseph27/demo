@@ -28,26 +28,51 @@ export function AuthScreen() {
     }
 
     setIsLoading(true);
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
+    const maxRetries = 3;
+    let attempt = 0;
 
-      if (res.ok) {
-        const data = await res.json();
-        setAuthenticated(true, data);
-        toast.success('Welcome back!');
-      } else {
+    while (attempt < maxRetries) {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setAuthenticated(true, data);
+          toast.success('Welcome back!');
+          return;
+        }
+
+        if (res.status === 429) {
+          // Rate limited — wait and retry
+          attempt++;
+          if (attempt < maxRetries) {
+            const delay = attempt * 3000; // 3s, 6s, 9s
+            toast.error(`Rate limited. Retrying in ${delay / 1000}s...`);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          toast.error('Too many login attempts. Please wait a minute and try again.');
+          return;
+        }
+
         const data = await res.json();
         toast.error(data.error || 'Invalid credentials');
+        return;
+      } catch (error) {
+        toast.error('Login failed — server may be restarting. Please try again.');
+        return;
+      } finally {
+        if (attempt >= maxRetries) {
+          setIsLoading(false);
+        }
       }
-    } catch (error) {
-      toast.error('Login failed');
-    } finally {
-      setIsLoading(false);
     }
+
+    setIsLoading(false);
   };
 
   return (

@@ -63,7 +63,7 @@ const COLUMN_MAPPINGS: {
   { patterns: ['made', 'Made', 'MADE', 'made in', 'Made In', 'made_in', 'origin', 'country', 'country of origin'], field: 'made', type: 'string' },
   { patterns: ['material', 'Material', 'MATERIAL', 'materials', 'Materials', 'MATERIALS', 'mat'], field: 'materials', type: 'array' },
   { patterns: ['additional info', 'additionalinfo', 'additional_info', 'additional information', 'add info', 'add_info', 'additional', 'extra info', 'extra_info', 'info', 'notes', 'extra'], field: 'additionalInfo', type: 'array' },
-  { patterns: ['price', 'Price', 'PRICE', 'unit price', 'unitprice', 'unit_price', 'cost', 'amount', 'rate'], field: 'price', type: 'number' },
+  { patterns: ['price', 'Price', 'PRICE', 'unit price', 'unitprice', 'unit_price', 'cost', 'amount', 'rate'], field: 'price', type: 'price' },
   { patterns: ['pcs', 'Pcs', 'PCS', 'pieces', 'Pieces', 'PIECES', 'piece', 'qty', 'quantity', 'Quantity', 'QTY', 'units', 'stock'], field: 'pcs', type: 'number' },
   { patterns: ['photo', 'Photo', 'PHOTO', 'image', 'Image', 'picture', 'Picture', 'img'], field: 'photo', type: 'string' },
 ];
@@ -276,6 +276,26 @@ function toNumber(value: any): number | null {
   return isNaN(num) ? null : num;
 }
 
+/**
+ * Parse a price value from Excel.
+ * Returns null for blank, empty, or zero values.
+ * Handles strings like "1.250", numbers like 1.25, and formats like "KD 1.250".
+ * Preserves up to 3 decimal places for Kuwaiti Dinar (dinar.fils).
+ */
+function toPrice(value: any): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  // If it's already a number, use it directly
+  if (typeof value === 'number') {
+    return value === 0 ? null : value;
+  }
+  // Strip currency symbols and whitespace
+  const cleaned = String(value).replace(/[^0-9.\-]/g, '').trim();
+  if (!cleaned || cleaned === '.') return null;
+  const num = Number(cleaned);
+  if (isNaN(num) || num === 0) return null;
+  return num;
+}
+
 function toString(value: any): string | null {
   if (value === null || value === undefined || value === '') return null;
   return String(value).trim() || null;
@@ -443,6 +463,8 @@ export async function POST(request: NextRequest) {
     let imported = 0;
     let errors = 0;
     let skipped = 0;
+    let withPrice = 0;
+    let withoutPrice = 0;
     const errorDetails: { row: number; error: string; data?: string }[] = [];
     const successDetails: { row: number; sr: number | null; description: string | null; ndNumber: string | null }[] = [];
 
@@ -468,6 +490,9 @@ export async function POST(request: NextRequest) {
         switch (mapInfo.type) {
           case 'number':
             record[mapInfo.field] = toNumber(rawValue);
+            break;
+          case 'price':
+            record[mapInfo.field] = toPrice(rawValue);
             break;
           case 'string':
             if (mapInfo.field === 'barcode') {
@@ -531,6 +556,11 @@ export async function POST(request: NextRequest) {
               if (singleError) throw singleError;
 
               imported++;
+              if (record.price != null && record.price !== 0) {
+                withPrice++;
+              } else {
+                withoutPrice++;
+              }
               successDetails.push({
                 row: rowNum,
                 sr: record.sr ?? null,
@@ -549,6 +579,11 @@ export async function POST(request: NextRequest) {
         // All rows in the batch succeeded
         imported += batch.length;
         for (const { rowNum, record } of batch) {
+          if (record.price != null && record.price !== 0) {
+            withPrice++;
+          } else {
+            withoutPrice++;
+          }
           successDetails.push({
             row: rowNum,
             sr: record.sr ?? null,
@@ -575,6 +610,8 @@ export async function POST(request: NextRequest) {
       errors,
       skipped,
       total: totalProcessed,
+      withPrice,
+      withoutPrice,
       elapsedMs,
       rawHeaders: headers,
       columnMapping: mappedHeaders,

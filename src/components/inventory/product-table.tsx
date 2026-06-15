@@ -32,7 +32,11 @@ import {
   Layers,
   Coins,
   FileDown,
+  ScanBarcode,
+  Camera,
 } from 'lucide-react';
+import { BarcodeScanner } from '@/components/inventory/barcode-scanner-modal';
+import { BarcodePhotoCapture } from '@/components/inventory/barcode-photo-capture';
 
 /** Format price as KD */
 function formatPrice(price: number | null): string {
@@ -100,6 +104,8 @@ export function ProductTable() {
   const [srRangeError, setSrRangeError] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [localSearch, setLocalSearch] = useState(searchQuery);
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [showPhotoCapture, setShowPhotoCapture] = useState(false);
   const totalPages = Math.ceil(totalProducts / 50);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -445,7 +451,55 @@ export function ProductTable() {
             </button>
           )}
         </div>
+        {/* Scan Barcode Button */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowBarcodeScanner(true)}
+          className="h-11 px-3 shrink-0 gap-1.5"
+          title="Scan Barcode"
+        >
+          <ScanBarcode className="h-5 w-5" />
+          <span className="text-xs hidden sm:inline">Scan</span>
+        </Button>
+        {/* Capture Barcode Photo Button */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowPhotoCapture(true)}
+          className="h-11 px-3 shrink-0 gap-1.5"
+          title="Capture Barcode Photo"
+        >
+          <Camera className="h-5 w-5" />
+          <span className="text-xs hidden sm:inline">Photo</span>
+        </Button>
       </div>
+
+      {/* Barcode Scanner Modal */}
+      {showBarcodeScanner && (
+        <BarcodeScanner
+          onScan={(barcode) => {
+            setShowBarcodeScanner(false);
+            setLocalSearch(barcode);
+            setSearchQuery(barcode);
+            setCurrentPage(1);
+          }}
+          onClose={() => setShowBarcodeScanner(false)}
+        />
+      )}
+
+      {/* Barcode Photo Capture Modal */}
+      {showPhotoCapture && (
+        <BarcodePhotoCapture
+          onScan={(barcode) => {
+            setShowPhotoCapture(false);
+            setLocalSearch(barcode);
+            setSearchQuery(barcode);
+            setCurrentPage(1);
+          }}
+          onClose={() => setShowPhotoCapture(false)}
+        />
+      )}
 
       {/* Search result info */}
       {searchQuery && !groupByNd && totalProducts > 0 && (
@@ -701,8 +755,12 @@ export function ProductTable() {
           </div>
         ) : products.length === 0 ? (
           <div className="text-center py-12">
-            <ImageIcon className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" />
-            <p className="text-muted-foreground">No products match your search</p>
+            <ScanBarcode className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" />
+            <p className="text-muted-foreground">
+              {searchQuery && /^\d+$/.test(searchQuery)
+                ? `No product found for barcode ${searchQuery}`
+                : 'No products match your search'}
+            </p>
             <Button variant="outline" className="mt-4" onClick={clearSearch}>
               Clear Search
             </Button>

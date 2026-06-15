@@ -7,13 +7,13 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { MultiValueInput } from './multi-value-input';
+import { MultiValueInput, MultiValueInputHandle } from './multi-value-input';
 import { SearchableMultiSelect } from './searchable-multi-select';
 import { SearchableSingleSelect } from './searchable-single-select';
 import { ImageGallery } from './image-gallery';
 import { BarcodeScanner } from './barcode-scanner';
 import { useInventoryStore, Product, DuplicateCheck } from '@/store/inventory-store';
-import { ArrowLeft, Save, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import { ArrowLeft, Save, AlertTriangle, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface ProductFormProps {
@@ -25,8 +25,7 @@ export function ProductForm({ mode }: ProductFormProps) {
     currentProduct,
     setView,
     goBack,
-    saveStatus,
-    setSaveStatus,
+    isSaving,
     setSaving,
     duplicates,
     setDuplicates,
@@ -54,7 +53,7 @@ export function ProductForm({ mode }: ProductFormProps) {
   const [priceDinar, setPriceDinar] = useState('');
   const [priceFils, setPriceFils] = useState('');
 
-  // ── Duplicate check (must be defined before handleFieldChange) ──────
+  // ── Duplicate check ──────
   const checkDuplicates = useCallback(async (ndNumber: string, barcode: string) => {
     if (!ndNumber && !barcode) {
       setDuplicates(null);
@@ -76,10 +75,9 @@ export function ProductForm({ mode }: ProductFormProps) {
     }
   }, [mode, currentProduct, setDuplicates]);
 
-  // ── Generic field change handler (must be defined before price handlers) ──
+  // ── Generic field change handler ──
   const handleFieldChange = useCallback((field: string, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
-    setSaveStatus('idle');
 
     if (field === 'ndNumber' || field === 'barcode') {
       checkDuplicates(
@@ -89,26 +87,15 @@ export function ProductForm({ mode }: ProductFormProps) {
     }
   }, [checkDuplicates, formData.ndNumber, formData.barcode]);
 
-  // Parse formData.price → Dinar + Fils whenever price changes externally
-  // (e.g. editing an existing product)
-  useEffect(() => {
-    if (formData.price) {
-      const num = parseFloat(formData.price);
-      if (!isNaN(num)) {
-        const dinar = Math.floor(num);
-        // Round fils to avoid floating-point issues (e.g. 1.050 → 50, not 49.999...)
-        const fils = Math.round((num - dinar) * 1000);
-        setPriceDinar(String(dinar));
-        setPriceFils(String(fils).padStart(3, '0'));
-      } else {
-        setPriceDinar('');
-        setPriceFils('');
-      }
-    } else {
-      setPriceDinar('');
-      setPriceFils('');
-    }
-  }, [mode, currentProduct]); // only on product load, NOT every formData.price change
+  // Helper: parse a numeric price string into Dinar + Fils components
+  const parsePriceToDinarFils = (priceStr: string): { dinar: string; fils: string } => {
+    if (!priceStr) return { dinar: '', fils: '' };
+    const num = parseFloat(priceStr);
+    if (isNaN(num)) return { dinar: '', fils: '' };
+    const dinar = Math.floor(num);
+    const fils = Math.round((num - dinar) * 1000);
+    return { dinar: String(dinar), fils: String(fils).padStart(3, '0') };
+  };
 
   // Compute the combined price string from Dinar + Fils
   const combinedPrice = useMemo(() => {
@@ -122,10 +109,8 @@ export function ProductForm({ mode }: ProductFormProps) {
   }, [priceDinar, priceFils]);
 
   const handlePriceDinarChange = useCallback((value: string) => {
-    // Only allow digits
     const clean = value.replace(/[^0-9]/g, '');
     setPriceDinar(clean);
-    // Update formData.price
     const dinar = clean || '0';
     const filsRaw = priceFils.trim();
     const fils = filsRaw ? filsRaw.padStart(3, '0') : '000';
@@ -139,13 +124,10 @@ export function ProductForm({ mode }: ProductFormProps) {
   }, [priceFils, handleFieldChange]);
 
   const handlePriceFilsChange = useCallback((value: string) => {
-    // Only allow digits, max 3 digits
     let clean = value.replace(/[^0-9]/g, '');
     if (clean.length > 3) clean = clean.slice(0, 3);
-    // Prevent value above 999
     if (clean && parseInt(clean) > 999) clean = '999';
     setPriceFils(clean);
-    // Update formData.price
     const dinar = priceDinar.trim() || '0';
     const fils = clean ? clean.padStart(3, '0') : '000';
     const dinarNum = parseInt(dinar) || 0;
@@ -160,13 +142,10 @@ export function ProductForm({ mode }: ProductFormProps) {
   const [colourSuggestions, setColourSuggestions] = useState<string[]>([]);
   const [materialSuggestions, setMaterialSuggestions] = useState<string[]>([]);
   const [madeSuggestions, setMadeSuggestions] = useState<string[]>([]);
-  // ── Custom values added via "+" button (persisted in localStorage) ──
   const [customColours, setCustomColours] = useState<string[]>([]);
   const [customMaterials, setCustomMaterials] = useState<string[]>([]);
   const [customCountries, setCustomCountries] = useState<string[]>([]);
 
-  // ── Predefined common values (always available in the dropdown) ──────
-  // These merge with whatever values exist in the database.
   const DEFAULT_COLOURS = [
     'Beige', 'Black', 'Blue', 'Brown', 'Gold', 'Green', 'Grey',
     'Multicolor', 'Orange', 'Pink', 'Purple', 'Red', 'Silver',
@@ -186,7 +165,6 @@ export function ProductForm({ mode }: ProductFormProps) {
     'Kuwait', 'UAE', 'Saudi Arabia',
   ];
 
-  // Merge: DB values ∪ predefined defaults ∪ custom localStorage values ∪ locally-selected values
   const mergedColourSuggestions = useMemo(() => {
     const set = new Set([...DEFAULT_COLOURS, ...colourSuggestions, ...customColours, ...formData.colours]);
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
@@ -197,14 +175,13 @@ export function ProductForm({ mode }: ProductFormProps) {
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }, [materialSuggestions, customMaterials, formData.materials]);
 
-  // Merge: predefined defaults ∪ custom localStorage countries ∪ DB-made values ∪ current selection
   const mergedCountrySuggestions = useMemo(() => {
     const set = new Set([...DEFAULT_COUNTRIES, ...customCountries, ...madeSuggestions, formData.made].filter(Boolean));
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }, [customCountries, madeSuggestions, formData.made]);
 
-  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const lastSavedDataRef = useRef<string>('');
+  // ── Ref for MultiValueInput to flush pending values before save ──
+  const additionalInfoInputRef = useRef<MultiValueInputHandle>(null);
 
   // Helper: safely parse a value that might be a JSON string, an array, or null
   const safeParseArray = (value: string | null | any[]): string[] => {
@@ -257,7 +234,6 @@ export function ProductForm({ mode }: ProductFormProps) {
   // ── Persist new custom colour to localStorage ──
   const handleNewColourPersist = useCallback((value: string) => {
     setCustomColours(prev => {
-      // Avoid duplicates (case-insensitive)
       if (prev.some(v => v.toLowerCase() === value.toLowerCase())) return prev;
       const updated = [...prev, value];
       try { localStorage.setItem('customColours', JSON.stringify(updated)); } catch { /* */ }
@@ -268,7 +244,6 @@ export function ProductForm({ mode }: ProductFormProps) {
   // ── Persist new custom material to localStorage ──
   const handleNewMaterialPersist = useCallback((value: string) => {
     setCustomMaterials(prev => {
-      // Avoid duplicates (case-insensitive)
       if (prev.some(v => v.toLowerCase() === value.toLowerCase())) return prev;
       const updated = [...prev, value];
       try { localStorage.setItem('customMaterials', JSON.stringify(updated)); } catch { /* */ }
@@ -279,7 +254,6 @@ export function ProductForm({ mode }: ProductFormProps) {
   // ── Persist new custom country to localStorage ──
   const handleNewCountryPersist = useCallback((value: string) => {
     setCustomCountries(prev => {
-      // Avoid duplicates (case-insensitive)
       if (prev.some(v => v.toLowerCase() === value.toLowerCase())) return prev;
       const updated = [...prev, value];
       try { localStorage.setItem('customCountries', JSON.stringify(updated)); } catch { /* */ }
@@ -287,11 +261,15 @@ export function ProductForm({ mode }: ProductFormProps) {
     });
   }, []);
 
+  // ── Load form data from currentProduct when entering edit mode ──
+  // This runs ONCE when the component mounts or when the product changes.
+  // No auto-save, no auto-refresh — form state is stable while editing.
   useEffect(() => {
     if (mode === 'edit' && currentProduct) {
       const colours = safeParseArray(currentProduct.colours);
       const materials = safeParseArray(currentProduct.materials);
       const additionalInfo = safeParseArray(currentProduct.additionalInfo);
+      const priceStr = currentProduct.price?.toString() || '';
 
       setFormData({
         sr: currentProduct.sr?.toString() || '',
@@ -306,41 +284,24 @@ export function ProductForm({ mode }: ProductFormProps) {
         made: currentProduct.made || '',
         materials,
         additionalInfo,
-        price: currentProduct.price?.toString() || '',
+        price: priceStr,
         pcs: currentProduct.pcs?.toString() || '',
       });
+
+      // Parse price into Dinar + Fils directly here (not in a separate effect)
+      // to avoid the race condition where the separate effect reads stale formData.price.
+      const { dinar, fils } = parsePriceToDinarFils(priceStr);
+      setPriceDinar(dinar);
+      setPriceFils(fils);
     }
   }, [mode, currentProduct]);
 
-  // Auto-save for edit mode
-  useEffect(() => {
-    if (mode !== 'edit' || !currentProduct) return;
+  // ── Manual save only — NO auto-save ──
+  const handleSave = async () => {
+    setSaving(true);
 
-    const currentData = JSON.stringify(formData);
-    if (currentData === lastSavedDataRef.current) return;
-
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-    }
-
-    autoSaveTimerRef.current = setTimeout(async () => {
-      await handleSave(true);
-      lastSavedDataRef.current = currentData;
-    }, 2000);
-
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-    };
-  }, [formData, mode, currentProduct]);
-
-  // checkDuplicates and handleFieldChange are defined above (before price handlers)
-  // to avoid temporal dead zone ReferenceError
-
-  const handleSave = async (isAutoSave = false) => {
-    if (!isAutoSave) setSaving(true);
-    setSaveStatus('saving');
+    // Flush any pending MultiValueInput values before building payload
+    additionalInfoInputRef.current?.flush();
 
     try {
       const payload = {
@@ -376,24 +337,16 @@ export function ProductForm({ mode }: ProductFormProps) {
       }
 
       if (res?.ok) {
-        const savedProduct = await res.json();
-        setCurrentProduct(savedProduct);
-        setSaveStatus('saved');
-
-        if (!isAutoSave) {
-          toast.success(mode === 'add' ? 'Product created successfully!' : 'Product updated successfully!');
-          setView('products');
-        }
+        toast.success(mode === 'add' ? 'Product created successfully!' : 'Product updated successfully!');
+        setView('products');
       } else {
-        setSaveStatus('error');
-        if (!isAutoSave) toast.error('Failed to save product');
+        toast.error('Failed to save product');
       }
     } catch (error) {
       console.error('Error saving product:', error);
-      setSaveStatus('error');
-      if (!isAutoSave) toast.error('Failed to save product');
+      toast.error('Failed to save product');
     } finally {
-      if (!isAutoSave) setSaving(false);
+      setSaving(false);
     }
   };
 
@@ -416,6 +369,15 @@ export function ProductForm({ mode }: ProductFormProps) {
         ...currentProduct,
         images: [...currentProduct.images, newImage].sort((a, b) => a.displayOrder - b.displayOrder),
       });
+      toast.success('Image uploaded successfully');
+    } else {
+      let errorMsg = 'Upload failed';
+      try {
+        const errData = await res.json();
+        errorMsg = errData.error || errorMsg;
+      } catch {}
+      toast.error(errorMsg);
+      throw new Error(errorMsg);
     }
   };
 
@@ -460,28 +422,18 @@ export function ProductForm({ mode }: ProductFormProps) {
             {mode === 'add' ? 'Add New Product' : 'Edit Product'}
           </h1>
         </div>
-        <div className="flex items-center gap-2">
-          {saveStatus === 'saving' && (
-            <span className="text-xs text-muted-foreground flex items-center gap-1">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Saving...
-            </span>
-          )}
-          {saveStatus === 'saved' && (
-            <span className="text-xs text-emerald-600 flex items-center gap-1">
-              <CheckCircle2 className="h-3 w-3" />
-              Saved
-            </span>
-          )}
-          <Button
-            onClick={() => handleSave(false)}
-            disabled={hasDuplicates || saveStatus === 'saving'}
-            className="h-10"
-          >
+        <Button
+          onClick={handleSave}
+          disabled={hasDuplicates || isSaving}
+          className="h-10"
+        >
+          {isSaving ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
             <Save className="h-4 w-4 mr-2" />
-            {mode === 'add' ? 'Create' : 'Save'}
-          </Button>
-        </div>
+          )}
+          {mode === 'add' ? 'Create' : 'Save'}
+        </Button>
       </div>
 
       {/* Duplicate Warnings */}
@@ -712,6 +664,7 @@ export function ProductForm({ mode }: ProductFormProps) {
             onNewValuePersist={handleNewMaterialPersist}
           />
           <MultiValueInput
+            ref={additionalInfoInputRef}
             label="Additional Info"
             values={formData.additionalInfo}
             onChange={(values) => handleFieldChange('additionalInfo', values)}
