@@ -32,7 +32,9 @@ interface BarcodePhotoCaptureProps {
   onClose: () => void;
 }
 
-type DetectionConfidence = 'High' | 'Low';
+type DetectionConfidence = 'High' | 'Medium' | 'Low';
+
+type SearchSource = 'barcode_decoded' | 'nd_number' | 'barcode_ocr';
 
 // Preferred barcode formats commonly found on products
 const PREFERRED_BARCODE_FORMATS = [
@@ -232,6 +234,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
   const [detectedBarcode, setDetectedBarcode] = useState<string | null>(null);
   const [detectedNdNumber, setDetectedNdNumber] = useState<string | null>(null);
   const [detectionConfidence, setDetectionConfidence] = useState<DetectionConfidence | null>(null);
+  const [searchSource, setSearchSource] = useState<SearchSource | null>(null);
   const [processingStep, setProcessingStep] = useState<string>('');
   const [showPreview, setShowPreview] = useState(false); // show cropped barcode before decoding
 
@@ -381,9 +384,10 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
           console.log(`[BarcodeCapture] OCR PSM=${config.psm} (${config.desc}):`, JSON.stringify(ocrText));
 
           const extracted = extractFromOcr(ocrText);
-          // Score: barcode digits are worth more, ND number adds bonus
-          const score = (extracted.barcodeDigits ? extracted.barcodeDigits.length * 2 : 0)
-                     + (extracted.ndNumber ? 10 : 0);
+          // Score: ND number gets strong bonus (more reliable than OCR barcode digits)
+          // We want the OCR config that finds ND number, even if it misses some barcode digits
+          const score = (extracted.barcodeDigits ? extracted.barcodeDigits.length : 0)
+                     + (extracted.ndNumber ? 20 : 0);
 
           if (score > bestScore) {
             bestResult = extracted;
@@ -519,6 +523,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     setDetectedBarcode(null);
     setDetectedNdNumber(null);
     setDetectionConfidence(null);
+    setSearchSource(null);
   }, [cropScanBox]);
 
   // ── Start processing after user verifies the preview ──
@@ -532,6 +537,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     setDetectedBarcode(null);
     setDetectedNdNumber(null);
     setDetectionConfidence(null);
+    setSearchSource(null);
 
     console.log('[BarcodeCapture] Original image size:', `${fullCanvas.width}x${fullCanvas.height}`);
 
@@ -603,6 +609,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
       setDetectedBarcode(barcodeResult);
       setDetectedNdNumber(ocrNdNumber);
       setDetectionConfidence('High');
+      setSearchSource('barcode_decoded');
       return;
     }
 
@@ -634,36 +641,53 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     }
 
     // ── Final result ──
-    const finalBarcode = ocrResult?.barcodeDigits || null;
+    // Priority: ND number > barcode digits OCR
+    // ND number is larger, clearer, and more reliable than OCR of 13-digit barcode string
     const finalNdNumber = ocrResult?.ndNumber || null;
-
-    console.log('[BarcodeCapture] ── Results summary ──');
-    console.log('[BarcodeCapture]   Barcode (OCR):', finalBarcode || '(none)');
-    console.log('[BarcodeCapture]   ND Number:', finalNdNumber || '(none)');
-    console.log('[BarcodeCapture]   Confidence: Low (OCR)');
+    const finalBarcode = ocrResult?.barcodeDigits || null;
 
     setIsProcessing(false);
     setProcessingStep('');
 
-    if (finalBarcode || finalNdNumber) {
-      setDetectedBarcode(finalBarcode);
+    if (finalNdNumber) {
+      // ND number is the primary search value (more reliable than OCR barcode digits)
       setDetectedNdNumber(finalNdNumber);
+      setDetectedBarcode(finalBarcode);
+      setDetectionConfidence('Medium');
+      setSearchSource('nd_number');
+      console.log('[BarcodeCapture] ── Results summary ──');
+      console.log('[BarcodeCapture]   ND Number:', finalNdNumber);
+      console.log('[BarcodeCapture]   Barcode (OCR):', finalBarcode || '(none)');
+      console.log('[BarcodeCapture]   Search by: ND Number (priority over OCR barcode)');
+    } else if (finalBarcode) {
+      // Last resort: OCR barcode digits only
+      setDetectedBarcode(finalBarcode);
       setDetectionConfidence('Low');
+      setSearchSource('barcode_ocr');
+      console.log('[BarcodeCapture] ── Results summary ──');
+      console.log('[BarcodeCapture]   Barcode (OCR):', finalBarcode);
+      console.log('[BarcodeCapture]   Search by: Barcode OCR (last resort)');
     } else {
       setNoBarcodeFound(true);
     }
   }, [cropScanBox, runOcrWithConfigs, tryBarcodeDetector, tryHtml5Qrcode]);
 
-  // ── Confirm detected barcode → search (barcode first, then ND number) ──
+  // ── Confirm detected value → search (priority: decoded barcode → ND number → OCR barcode) ──
   const confirmBarcode = useCallback(() => {
     if (!detectedBarcode && !detectedNdNumber) return;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
-    // Pass barcode as primary, ndNumber as secondary fallback
-    onScan(detectedBarcode || '', detectedNdNumber || undefined);
-  }, [detectedBarcode, detectedNdNumber, onScan]);
+    // Search priority: decoded barcode → ND number → OCR barcode digits
+    if (searchSource === 'nd_number') {
+      // Search by ND number first, barcode digits as fallback
+      onScan(detectedNdNumber || '', detectedBarcode || undefined);
+    } else {
+      // Search by barcode (decoded or OCR)
+      onScan(detectedBarcode || '', detectedNdNumber || undefined);
+    }
+  }, [detectedBarcode, detectedNdNumber, searchSource, onScan]);
 
   // ── Retry ──
   const retry = useCallback(() => {
@@ -674,6 +698,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     setDetectedBarcode(null);
     setDetectedNdNumber(null);
     setDetectionConfidence(null);
+    setSearchSource(null);
     setProcessingStep('');
     setShowPreview(false);
 
@@ -694,8 +719,12 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
       {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-3 bg-black/80 text-white z-10">
         <h2 className="text-lg font-semibold">
-          {detectedBarcode
-            ? 'Barcode Detected'
+          {(detectedBarcode || detectedNdNumber)
+            ? searchSource === 'barcode_decoded'
+              ? 'Barcode Decoded'
+              : searchSource === 'nd_number'
+                ? 'ND Number Detected'
+                : 'Barcode Detected (OCR)'
             : capturedImage
               ? isProcessing
                 ? processingStep || 'Processing...'
@@ -727,8 +756,8 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
           />
         )}
 
-        {/* Captured image (frozen frame) — shown during processing, not during preview */}
-        {capturedImage && !showPreview && !detectedBarcode && !noBarcodeFound && (
+        {/* Captured image (frozen frame) — shown during processing, not during preview or result */}
+        {capturedImage && !showPreview && !detectedBarcode && !detectedNdNumber && !noBarcodeFound && (
           <img
             src={capturedImage}
             alt="Captured barcode"
@@ -821,16 +850,18 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
           </div>
         )}
 
-        {/* ── DETECTED RESULT: barcode + ND number + confirm/retake ── */}
+        {/* ── DETECTED RESULT: barcode + ND number + search source indicator ── */}
         {(detectedBarcode || detectedNdNumber) && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 px-6 py-4">
             {croppedPreview && (
               <div className="w-full max-w-xs mb-3">
                 <p className="text-white/60 text-xs text-center mb-2">Scanned region:</p>
                 <div className={`border-2 rounded-lg overflow-hidden ${
-                  detectionConfidence === 'High'
+                  searchSource === 'barcode_decoded'
                     ? 'border-green-500/50'
-                    : 'border-amber-500/50'
+                    : searchSource === 'nd_number'
+                      ? 'border-blue-500/50'
+                      : 'border-amber-500/50'
                 }`}>
                   <img src={croppedPreview} alt="Scanned region" className="w-full h-auto" />
                 </div>
@@ -841,23 +872,43 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
               {/* Detected Barcode */}
               {detectedBarcode && (
                 <div className={`rounded-xl px-5 py-3 text-center ${
-                  detectionConfidence === 'High'
+                  searchSource === 'barcode_decoded'
                     ? 'bg-green-900/40 border border-green-500/50'
-                    : 'bg-amber-900/40 border border-amber-500/50'
+                    : searchSource === 'barcode_ocr'
+                      ? 'bg-amber-900/40 border border-amber-500/50'
+                      : 'bg-white/5 border border-white/20' // supplementary, not used for search
                 }`}>
                   <div className="flex items-center justify-center gap-2 mb-1">
                     <p className={`text-xs font-medium ${
-                      detectionConfidence === 'High' ? 'text-green-400' : 'text-amber-400'
+                      searchSource === 'barcode_decoded'
+                        ? 'text-green-400'
+                        : searchSource === 'barcode_ocr'
+                          ? 'text-amber-400'
+                          : 'text-white/50'
                     }`}>
-                      Detected Barcode{detectionConfidence === 'High' ? '' : ' (OCR)'}
+                      Detected Barcode
+                      {searchSource === 'barcode_decoded' ? '' : searchSource === 'barcode_ocr' ? ' (OCR)' : ''}
                     </p>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                      detectionConfidence === 'High'
-                        ? 'bg-green-500/20 text-green-400'
-                        : 'bg-amber-500/20 text-amber-400'
-                    }`}>
-                      {detectionConfidence}
-                    </span>
+                    {searchSource === 'barcode_decoded' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-green-500/20 text-green-400">
+                        High
+                      </span>
+                    )}
+                    {searchSource === 'barcode_ocr' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-500/20 text-amber-400">
+                        Low
+                      </span>
+                    )}
+                    {(searchSource === 'barcode_decoded' || searchSource === 'barcode_ocr') && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-white/20 text-white animate-pulse">
+                        → Search
+                      </span>
+                    )}
+                    {searchSource === 'nd_number' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-white/10 text-white/40">
+                        supplementary
+                      </span>
+                    )}
                   </div>
                   <p className="text-white text-2xl font-mono font-bold tracking-widest">{detectedBarcode}</p>
                 </div>
@@ -865,12 +916,44 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
 
               {/* Detected ND Number */}
               {detectedNdNumber && (
-                <div className="rounded-xl px-5 py-3 text-center bg-blue-900/30 border border-blue-500/40">
-                  <p className="text-blue-400 text-xs font-medium mb-1">Detected ND Number</p>
+                <div className={`rounded-xl px-5 py-3 text-center ${
+                  searchSource === 'nd_number'
+                    ? 'bg-blue-900/40 border border-blue-500/50'
+                    : 'bg-white/5 border border-white/20'
+                }`}>
+                  <div className="flex items-center justify-center gap-2 mb-1">
+                    <p className={`text-xs font-medium ${
+                      searchSource === 'nd_number' ? 'text-blue-400' : 'text-white/50'
+                    }`}>
+                      Detected ND Number
+                    </p>
+                    {searchSource === 'nd_number' && (
+                      <>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-blue-500/20 text-blue-400">
+                          Medium
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-white/20 text-white animate-pulse">
+                          → Search
+                        </span>
+                      </>
+                    )}
+                    {searchSource === 'barcode_decoded' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-white/10 text-white/40">
+                        supplementary
+                      </span>
+                    )}
+                  </div>
                   <p className="text-white text-xl font-mono font-bold tracking-wider">{detectedNdNumber}</p>
                 </div>
               )}
             </div>
+
+            {/* Search priority info */}
+            {searchSource && (
+              <p className="text-white/40 text-[10px] mb-4 text-center max-w-xs">
+                Search priority: Barcode bars → ND Number → Barcode OCR
+              </p>
+            )}
 
             <div className="flex gap-3 w-full max-w-xs">
               <Button
@@ -883,14 +966,21 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
               </Button>
               <Button
                 onClick={confirmBarcode}
-                className={`flex-1 h-12 gap-2 ${
-                  detectionConfidence === 'High'
+                className={`flex-1 h-12 gap-2 font-semibold ${
+                  searchSource === 'barcode_decoded'
                     ? 'bg-green-600 hover:bg-green-700 text-white'
-                    : 'bg-amber-600 hover:bg-amber-700 text-white'
+                    : searchSource === 'nd_number'
+                      ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                      : 'bg-amber-600 hover:bg-amber-700 text-white'
                 }`}
               >
                 <Check className="h-5 w-5" />
-                Search Product
+                {searchSource === 'barcode_decoded'
+                  ? 'Search by Barcode'
+                  : searchSource === 'nd_number'
+                    ? 'Search by ND Number'
+                    : 'Search by Barcode (OCR)'
+                }
               </Button>
             </div>
           </div>
