@@ -161,7 +161,7 @@ function extractFromOcr(text: string): OcrExtractionResult {
 
 /**
  * Pre-process a canvas: greyscale → contrast boost → binarize.
- * Used before both barcode decoding and OCR to improve accuracy.
+ * Used for OCR fallback. Kept simple for text recognition.
  */
 function preprocessCanvas(sourceCanvas: HTMLCanvasElement, threshold: number = 128): HTMLCanvasElement {
   const w = sourceCanvas.width;
@@ -189,6 +189,239 @@ function preprocessCanvas(sourceCanvas: HTMLCanvasElement, threshold: number = 1
   ctx.putImageData(imageData, 0, 0);
 
   return out;
+}
+
+/**
+ * Heavy-duty image enhancement pipeline specifically for barcode decoding.
+ * Barcode bars need maximum black/white separation and sharp edges.
+ *
+ * Pipeline: greyscale → contrast stretch → unsharp mask sharpen →
+ *           noise reduction → adaptive threshold binarize
+ */
+function enhanceForBarcode(sourceCanvas: HTMLCanvasElement): HTMLCanvasElement {
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
+
+  // ── Step 1: Get greyscale pixel array ──
+  const tmpCanvas = document.createElement('canvas');
+  tmpCanvas.width = w;
+  tmpCanvas.height = h;
+  const tmpCtx = tmpCanvas.getContext('2d')!;
+  tmpCtx.drawImage(sourceCanvas, 0, 0);
+  const imgData = tmpCtx.getImageData(0, 0, w, h);
+  const src = imgData.data;
+
+  // Build greyscale array
+  const grey = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    grey[i] = 0.299 * src[i * 4] + 0.587 * src[i * 4 + 1] + 0.114 * src[i * 4 + 2];
+  }
+
+  // ── Step 2: Contrast stretch (2x factor) — push darks darker, lights lighter ──
+  // Find 5th and 95th percentile to avoid outlier influence
+  const sorted = Array.from(grey).sort((a, b) => a - b);
+  const pLow = sorted[Math.floor(sorted.length * 0.05)];
+  const pHigh = sorted[Math.floor(sorted.length * 0.95)];
+  const range = Math.max(pHigh - pLow, 1);
+
+  for (let i = 0; i < grey.length; i++) {
+    // Normalize to [0..1] based on percentile range, then stretch
+    let v = (grey[i] - pLow) / range;
+    v = Math.min(1, Math.max(0, v));
+    // Apply S-curve for extra contrast: steeper around midpoint
+    v = v < 0.5
+      ? 2 * v * v
+      : 1 - 2 * (1 - v) * (1 - v);
+    grey[i] = v * 255;
+  }
+
+  // ── Step 3: Unsharp mask sharpening (3x3 kernel) ──
+  // Blurs the image, then subtracts blur from original to enhance edges
+  const sharpened = new Float32Array(w * h);
+  const blurRadius = 1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+
+      // Compute local average (box blur)
+      let sum = 0;
+      let count = 0;
+      for (let dy = -blurRadius; dy <= blurRadius; dy++) {
+        for (let dx = -blurRadius; dx <= blurRadius; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+            sum += grey[ny * w + nx];
+            count++;
+          }
+        }
+      }
+      const avg = sum / count;
+
+      // Unsharp mask: original + amount * (original - blurred)
+      const amount = 1.5; // sharpening strength
+      sharpened[idx] = Math.min(255, Math.max(0, grey[idx] + amount * (grey[idx] - avg)));
+    }
+  }
+
+  // ── Step 4: Noise reduction — median filter (3x3) ──
+  // Removes salt-and-pepper noise that confuses barcode decoders
+  const denoised = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const neighbors: number[] = [];
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+            neighbors.push(sharpened[ny * w + nx]);
+          }
+        }
+      }
+      neighbors.sort((a, b) => a - b);
+      denoised[idx] = neighbors[Math.floor(neighbors.length / 2)];
+    }
+  }
+
+  // ── Step 5: Adaptive threshold binarization ──
+  // Instead of a single global threshold, compute local threshold
+  // This handles uneven lighting much better than a fixed threshold
+  const blockSize = Math.max(3, Math.min(31, Math.floor(Math.min(w, h) / 10) | 1)); // must be odd
+  const c = 10; // constant subtracted from mean (tunable)
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = w;
+  outCanvas.height = h;
+  const outCtx = outCanvas.getContext('2d')!;
+  const outData = outCtx.createImageData(w, h);
+  const outPixels = outData.data;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Compute local mean in a block around (x, y)
+      let localSum = 0;
+      let localCount = 0;
+      const halfBlock = Math.floor(blockSize / 2);
+      for (let dy = -halfBlock; dy <= halfBlock; dy++) {
+        for (let dx = -halfBlock; dx <= halfBlock; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+            localSum += denoised[ny * w + nx];
+            localCount++;
+          }
+        }
+      }
+      const localMean = localSum / localCount;
+      const threshold = localMean - c;
+
+      const val = denoised[y * w + x] > threshold ? 255 : 0;
+      const outIdx = (y * w + x) * 4;
+      outPixels[outIdx] = val;
+      outPixels[outIdx + 1] = val;
+      outPixels[outIdx + 2] = val;
+      outPixels[outIdx + 3] = 255;
+    }
+  }
+
+  outCtx.putImageData(outData, 0, 0);
+  return outCanvas;
+}
+
+/**
+ * Detect barcode region in a canvas using BarcodeDetector.
+ * Returns a cropped canvas containing only the barcode area with padding,
+ * or null if no barcode region could be located.
+ *
+ * This is used to isolate just the barcode bars from the rest of the label,
+ * so that scaling/enhancement is applied only where it matters.
+ */
+async function detectBarcodeRegion(sourceCanvas: HTMLCanvasElement): Promise<HTMLCanvasElement | null> {
+  if (typeof BarcodeDetector === 'undefined') {
+    console.log('[BarcodeCapture] detectBarcodeRegion: BarcodeDetector not available');
+    return null;
+  }
+
+  try {
+    const supportedFormats = await BarcodeDetector.getSupportedFormats();
+    const preferredSupported = PREFERRED_BARCODE_FORMATS.filter(
+      f => supportedFormats.includes(f as any)
+    );
+    const formatsToUse = preferredSupported.length > 0
+      ? preferredSupported
+      : supportedFormats.slice(0, 8);
+
+    if (formatsToUse.length === 0) return null;
+
+    const detector = new BarcodeDetector({ formats: formatsToUse as any[] });
+
+    // Try detection on the raw canvas first
+    const blob = await new Promise<Blob | null>((resolve) => {
+      sourceCanvas.toBlob(resolve, 'image/png');
+    });
+    if (!blob) return null;
+
+    const imageBitmap = await createImageBitmap(blob);
+    let results = await detector.detect(imageBitmap);
+
+    // If raw canvas doesn't detect, try a quick pre-enhanced version
+    if (results.length === 0) {
+      const quickScaled = scaleCanvas(sourceCanvas, 2);
+      const quickEnhanced = enhanceForBarcode(quickScaled);
+      const blob2 = await new Promise<Blob | null>((resolve) => {
+        quickEnhanced.toBlob(resolve, 'image/png');
+      });
+      if (!blob2) return null;
+      const bitmap2 = await createImageBitmap(blob2);
+      results = await detector.detect(bitmap2);
+    }
+
+    if (results.length === 0) {
+      console.log('[BarcodeCapture] detectBarcodeRegion: no barcode found in image');
+      return null;
+    }
+
+    // Get the bounding box of the first detected barcode
+    const barcode = results[0];
+    const box = barcode.boundingBox;
+
+    console.log('[BarcodeCapture] Barcode region found:', {
+      x: Math.round(box.x),
+      y: Math.round(box.y),
+      width: Math.round(box.width),
+      height: Math.round(box.height),
+      format: barcode.format,
+    });
+
+    // Add generous padding around the barcode (quiet zones are important for decoding)
+    const paddingX = Math.round(box.width * 0.25); // 25% padding on each side
+    const paddingY = Math.round(box.height * 0.4);  // 40% top/bottom for number text
+    const cropLeft = Math.max(0, Math.round(box.x) - paddingX);
+    const cropTop = Math.max(0, Math.round(box.y) - paddingY);
+    const cropRight = Math.min(sourceCanvas.width, Math.round(box.x + box.width) + paddingX);
+    const cropBottom = Math.min(sourceCanvas.height, Math.round(box.y + box.height) + paddingY);
+    const cropW = cropRight - cropLeft;
+    const cropH = cropBottom - cropTop;
+
+    if (cropW < 10 || cropH < 10) return null; // sanity check
+
+    // Crop the barcode region from the ORIGINAL (un-enhanced) source
+    // so we can apply our own enhancement pipeline later
+    const croppedCanvas = document.createElement('canvas');
+    croppedCanvas.width = cropW;
+    croppedCanvas.height = cropH;
+    const ctx = croppedCanvas.getContext('2d')!;
+    ctx.drawImage(sourceCanvas, cropLeft, cropTop, cropW, cropH, 0, 0, cropW, cropH);
+
+    console.log('[BarcodeCapture] Cropped barcode region:', `${cropW}x${cropH}`,
+      `from ${sourceCanvas.width}x${sourceCanvas.height}`);
+
+    return croppedCanvas;
+  } catch (err) {
+    console.log('[BarcodeCapture] detectBarcodeRegion error:', err);
+    return null;
+  }
 }
 
 /**
@@ -543,54 +776,93 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
 
     // ── Crop the scan box ──
     const croppedCanvas = cropScanBox(fullCanvas);
-    console.log('[BarcodeCapture] Cropped image size:', `${croppedCanvas.width}x${croppedCanvas.height}`);
-
-    // ── Pre-process: scale up → greyscale → contrast → binarize ──
-    const targetWidth = 800;
-    const autoScale = Math.max(2, Math.min(4, Math.ceil(targetWidth / croppedCanvas.width)));
-    console.log(`[BarcodeCapture] Auto-scaling cropped region ${autoScale}x`);
-
-    const scaledCanvas = scaleCanvas(croppedCanvas, autoScale);
-    const enhancedCanvas = preprocessCanvas(scaledCanvas, 120);
+    console.log('[BarcodeCapture] Scan box crop size:', `${croppedCanvas.width}x${croppedCanvas.height}`);
 
     // ══════════════════════════════════════════════════════════
     // PHASE 1: BARCODE DECODING (High Confidence)
     // ══════════════════════════════════════════════════════════
+    //
+    // Strategy: Try to locate the barcode region, then apply aggressive
+    // scaling + enhancement at multiple scales (2x→4x→6x→8x).
+    // Stop immediately when a valid barcode is decoded.
+    //
+    // Sources to try (in order):
+    //   A. Detected barcode region (if BarcodeDetector can locate it)
+    //   B. Scan box crop (the rectangle the user aligned)
+    //   C. Full image (last resort before OCR)
+    //
+    // For each source, try enhanced versions at 2x, 4x, 6x, 8x.
     let barcodeResult: string | null = null;
+    let usedScale = 0;
+    let usedSource = '';
 
-    setProcessingStep('Decoding barcode...');
-    barcodeResult = await tryBarcodeDetector(enhancedCanvas, 'enhanced cropped');
+    // ── Step A: Detect barcode region and isolate it ──
+    setProcessingStep('Locating barcode region...');
+    const barcodeRegion = await detectBarcodeRegion(croppedCanvas);
 
-    if (!barcodeResult) {
-      setProcessingStep('Trying raw crop...');
-      barcodeResult = await tryBarcodeDetector(croppedCanvas, 'cropped');
+    // Also try on full image if scan box didn't find it
+    const barcodeRegionFull = !barcodeRegion
+      ? await detectBarcodeRegion(fullCanvas)
+      : null;
+
+    // Build the list of source canvases to try
+    const sources: Array<{ canvas: HTMLCanvasElement; label: string }> = [];
+    if (barcodeRegion) {
+      sources.push({ canvas: barcodeRegion, label: 'barcode region' });
+      console.log('[BarcodeCapture] Using detected barcode region:', `${barcodeRegion.width}x${barcodeRegion.height}`);
+    }
+    if (barcodeRegionFull) {
+      sources.push({ canvas: barcodeRegionFull, label: 'barcode region (full)' });
+      console.log('[BarcodeCapture] Using detected barcode region from full image:', `${barcodeRegionFull.width}x${barcodeRegionFull.height}`);
+    }
+    // Always include the scan box crop and full image as fallback sources
+    sources.push({ canvas: croppedCanvas, label: 'scan box crop' });
+    sources.push({ canvas: fullCanvas, label: 'full image' });
+
+    // ── Step B: Try barcode decoding at multiple scales ──
+    const scales = [2, 4, 6, 8];
+
+    for (const source of sources) {
+      for (const scale of scales) {
+        if (barcodeResult) break; // Stop immediately on success
+
+        const label = `${source.label} ${scale}x`;
+        setProcessingStep(`Decoding ${label}...`);
+
+        // Scale up using nearest-neighbor (sharp edges for barcodes)
+        const scaled = scaleCanvas(source.canvas, scale);
+        console.log(`[BarcodeCapture] Trying ${label}: ${scaled.width}x${scaled.height}`);
+
+        // Apply heavy enhancement pipeline for barcode decoding
+        const enhanced = enhanceForBarcode(scaled);
+
+        // Try BarcodeDetector first (native, fast)
+        const result1 = await tryBarcodeDetector(enhanced, label);
+        if (result1) {
+          barcodeResult = result1;
+          usedScale = scale;
+          usedSource = source.label;
+          break;
+        }
+
+        // Try html5-qrcode second (library, slower)
+        const elemId = scale <= 4 ? 'barcode-photo-scan-element' : 'barcode-photo-scan-element-2';
+        const result2 = await tryHtml5Qrcode(enhanced, label, elemId);
+        if (result2) {
+          barcodeResult = result2;
+          usedScale = scale;
+          usedSource = source.label;
+          break;
+        }
+      }
+      if (barcodeResult) break;
     }
 
-    if (!barcodeResult) {
-      setProcessingStep('Decoding from full image...');
-      barcodeResult = await tryBarcodeDetector(fullCanvas, 'full');
-    }
-
-    if (!barcodeResult) {
-      setProcessingStep('Trying alternative decoder...');
-      barcodeResult = await tryHtml5Qrcode(enhancedCanvas, 'enhanced cropped', 'barcode-photo-scan-element');
-    }
-
-    if (!barcodeResult) {
-      setProcessingStep('Trying decoder on raw crop...');
-      barcodeResult = await tryHtml5Qrcode(croppedCanvas, 'cropped', 'barcode-photo-scan-element');
-    }
-
-    if (!barcodeResult) {
-      setProcessingStep('Trying decoder on full image...');
-      barcodeResult = await tryHtml5Qrcode(fullCanvas, 'full', 'barcode-photo-scan-element-2');
-    }
-
-    // If barcode decoded, still run OCR briefly on the raw crop to try to get ND number
+    // If barcode decoded, also run OCR for ND number
     // (ND number is never encoded in the barcode bars — it's always printed text)
     let ocrNdNumber: string | null = null;
     if (barcodeResult) {
-      console.log('[BarcodeCapture] Barcode decoded, also trying OCR for ND number...');
+      console.log(`[BarcodeCapture] Barcode decoded from ${usedSource} at ${usedScale}x`);
       setProcessingStep('Checking for ND number...');
       const quickOcr = await runOcrWithConfigs(croppedCanvas, 'ND number extraction');
       if (quickOcr?.ndNumber) {
@@ -601,6 +873,7 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     if (barcodeResult) {
       console.log('[BarcodeCapture] ── Results summary ──');
       console.log('[BarcodeCapture]   Barcode decoded:', barcodeResult);
+      console.log('[BarcodeCapture]   Source:', usedSource, 'at', usedScale + 'x');
       console.log('[BarcodeCapture]   ND Number:', ocrNdNumber || '(none)');
       console.log('[BarcodeCapture]   Confidence: High');
 
@@ -614,9 +887,15 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     }
 
     // ══════════════════════════════════════════════════════════
-    // PHASE 2: OCR FALLBACK (Low Confidence)
+    // PHASE 2: OCR FALLBACK (Medium/Low Confidence)
     // ══════════════════════════════════════════════════════════
-    console.log('[BarcodeCapture] Barcode decoding failed, falling back to OCR...');
+    console.log('[BarcodeCapture] Barcode decoding failed at all scales, falling back to OCR...');
+
+    // Prepare enhanced canvas for OCR (use simple preprocessing, not barcode-specific)
+    const targetWidth = 800;
+    const autoScale = Math.max(2, Math.min(4, Math.ceil(targetWidth / croppedCanvas.width)));
+    const scaledCanvas = scaleCanvas(croppedCanvas, autoScale);
+    const enhancedCanvas = preprocessCanvas(scaledCanvas, 120);
 
     let ocrResult: OcrExtractionResult | null = null;
 
@@ -650,7 +929,6 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
     setProcessingStep('');
 
     if (finalNdNumber) {
-      // ND number is the primary search value (more reliable than OCR barcode digits)
       setDetectedNdNumber(finalNdNumber);
       setDetectedBarcode(finalBarcode);
       setDetectionConfidence('Medium');
@@ -658,9 +936,8 @@ export function BarcodePhotoCapture({ onScan, onClose }: BarcodePhotoCaptureProp
       console.log('[BarcodeCapture] ── Results summary ──');
       console.log('[BarcodeCapture]   ND Number:', finalNdNumber);
       console.log('[BarcodeCapture]   Barcode (OCR):', finalBarcode || '(none)');
-      console.log('[BarcodeCapture]   Search by: ND Number (priority over OCR barcode)');
+      console.log('[BarcodeCapture]   Search by: ND Number');
     } else if (finalBarcode) {
-      // Last resort: OCR barcode digits only
       setDetectedBarcode(finalBarcode);
       setDetectionConfidence('Low');
       setSearchSource('barcode_ocr');
